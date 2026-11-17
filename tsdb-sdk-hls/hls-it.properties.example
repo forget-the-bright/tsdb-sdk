@@ -1,0 +1,41 @@
+# 和利时 HLS 生产环境只读集成测试配置示例。
+# 复制为 hls-it.properties 后填入现场凭据；该文件已被 .gitignore 排除。
+#
+# 也可以不用文件，改用系统属性（-Dhls.it.baseUrl=...）或环境变量（HLS_IT_BASE_URL）。
+
+# HLS REST 服务根地址；http 必须同时 allowInsecureTransport=true
+baseUrl=http://10.10.7.155:9000
+
+# 动态 token 凭据（与 user-id/secret-key 对应）
+userId=httpIO
+secretKey=change-me
+
+# 如果现场直接给静态 token，可只填 token，userId/secretKey 留空
+#token=
+
+# 连接/读取超时（毫秒）。SDK 要求正数，现场配置里的 -1 不能直接照搬。
+# 全量标签目录约 4.3 MB，读取超时建议 180000；重试 1 次避免超时翻倍。
+connectTimeoutMs=5000
+readTimeoutMs=180000
+maxAttempts=1
+
+# token 本地缓存秒数；参照工程用 43199
+tokenExpireSeconds=43199
+
+# 只读测试仍显式禁止写入；现场为 http，必须允许明文
+allowInsecureTransport=true
+verifyHostname=true
+
+# 时间展示：HLS 协议是 epoch，source-zone 不参与数值解析；
+# target-zone/pattern 只影响 Sample.timestampText。
+responseEnabled=true
+responseSourceZone=GMT+8
+responseTargetZone=GMT+8
+responsePattern=yyyy-MM-dd HH:mm:ss
+
+# 历史窗口与聚合步长（秒）
+historyHours=24
+intervalSeconds=3600
+
+# 现场点位；不存在的点会以 null Sample 返回，不会中断整批查询
+points=E101FIT1001_DACA_PV,E101FIT2001_DACA_PV,E101FIT3001_DACA_PV,E131FIT1003_DACA_PV,E131FIT2003_DACA_PV,E131FIT3003_DACA_PV,E102FIT1013_DACA_PV,E102FIT2013_DACA_PV,E102FIT1016_lastvalue_pv,E102FIT1017_lastvalue_pv,E102FIT2016_lastvalue_pv,E102FIT2017_lastvalue_pv,E102FIT3016_lastvalue_pv,E102FIT3017_lastvalue_pv,E405FIT0007_lastvalue_pv,E405FIT0008_lastvalue_pv

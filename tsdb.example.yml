@@ -1,0 +1,128 @@
+# tsdb-sdk 配置示例
+# 复制为 tsdb.yml 后按现场修改；敏感值用环境变量占位符。
+tsdb:
+  # 运行时只启用这一个实例；切换数据库改这里，或调用 manager.switchTo(...)
+  default-instance: hls_main
+  fail-fast: true
+  security:
+    allow-write: false              # 默认只读；写 DCS 必须显式开启并评审
+    allow-insecure-transport: false # 生产禁用明文 HTTP
+    verify-hostname: true
+    audit-enabled: true
+
+  instances:
+    hls_main:
+      type: hls
+      protocol: rest
+      # 参照环境是 http://10.10.7.177:9000；生产建议用 TLS 代理。
+      # 确需直连明文 HTTP 时，必须把 security.allow-insecure-transport 设为 true。
+      base-url: https://10.10.7.177:9000
+      auth:
+        user-id: ${HLS_USER}
+        secret-key: ${HLS_SECRET}
+      timeout:
+        connect-ms: 5000
+        read-ms: 30000
+      retry:
+        max-attempts: 2
+        backoff-ms: 200
+      options:
+        path-prefix: ""
+        token-expire-seconds: 1800
+        # HLS 协议时间本身是 epoch 秒；time.* 不改变请求/响应数值，
+        # 只供 HlsClient.parseTimestamp/formatTimestamp 统一解析与展示。
+        time:
+          response:
+            source-zone: GMT+8
+            target-zone: GMT+8
+            pattern: "yyyy-MM-dd HH:mm:ss"
+
+    ge_main:
+      type: ge
+      protocol: rest
+      base-url: https://172.16.176.9
+      auth:
+        username: ${GE_USER}
+        password: ${GE_PASSWORD}
+        client-id: ${GE_CLIENT_ID}
+        client-secret: ${GE_CLIENT_SECRET}
+      options:
+        path-prefix: /historian-rest-api
+        token-expire-seconds: 1800
+        # 铜陵现场：GE 请求参数与响应时间都是 UTC，界面需要 GMT+8。
+        # 请求：Instant 按 UTC 格式化为 GE 要求的字符串。
+        # 响应：无时区的 TimeStamp 先按 source-zone 解释成绝对时刻，再按 target-zone 展示。
+        # 若某项目 GE 本身就用 GMT+8，把 request.zone 与 response.source-zone 都改成 GMT+8 即可。
+        time:
+          request:
+            enabled: true
+            zone: UTC
+            pattern: "yyyy-MM-dd'T'HH:mm:ssXXX"
+          response:
+            enabled: true
+            source-zone: UTC
+            target-zone: GMT+8
+            pattern: "yyyy-MM-dd HH:mm:ss"
+
+    iotdb_main:
+      type: iotdb
+      protocol: rest
+      base-url: http://10.30.1.10:18080
+      auth:
+        username: ${IOTDB_USER}
+        password: ${IOTDB_PASSWORD}
+      options:
+        path-prefix: /rest/v2
+        # native / jdbc / rest；默认 rest。native 与 jdbc 使用 rpc-port。
+        transport: rest
+        rpc-port: 6667
+        # 业务可只传 device01.temperature，由驱动补成 root.factory.device01.temperature。
+        # 不配置时，调用方必须传完整的 root.数据库.设备.测量点 路径。
+        default-database: root.factory
+        # 业务日历时区：自然日/月分桶边界与班次窗口对齐用它，与下面 time.* 是两件事
+        # （time.* 只影响 timestampText 的解析与展示，改成 UTC 不改变 epoch 毫秒值）。
+        zone: Asia/Shanghai
+        # 换班小时（0..23），配合 zone 供 shiftWindow() 使用。
+        shift-hour: 8
+        # 装配不到统一 SQL 查询服务时构造期抛异常，而不是静默退回逐位号 REST 直连。
+        require-query-service: true
+        # 单条 SQL 携带的位号表达式上限；设为 1 即任何族都退化成一条 SQL 一个位号。
+        # 旧键 current-batch-size 已不接受，残留即启动失败。
+        query-batch-size: 200
+        # 块间并行上限（只在语句之间并行，一条 SQL 内部不再切）。
+        # 旧键 current-parallelism 同上改名、不留别名。
+        query-parallelism: 4
+        # 批量分组档位：database（FROM 用库）/ root（跨库合成一条）/ device（改造前行为）。
+        # 默认 database —— 入场券是同库自对自的双跑对数（IotdbTierParityIT：逐表达式、device、
+        # database 三种配置逐序列逐点 0 容差，七个查询族全部 diffs=0）。
+        # device 保留为现场回退档，与改造前“一个设备一条 SQL”逐字节相同；
+        # root 三通道实测可用，但受限账号可能只授予按库授权，故不作默认。
+        query-batch-scope: database
+        # RAW/插值批量单条 SQL 的行数预算；多列 RAW 的 LIMIT 是"合并时间戳行数"预算，
+        # 10000 是实测服务端上限（超出报 code=708），不是客户端猜测。
+        query-batch-row-budget: 10000
+        # 一块内最多允许多少位号走逐位号补采；超过则整块退回逐位号，不静默截断。
+        query-batch-completion-max: 32
+        # 插值网格允许的外推毫秒数；0 表示不外推，网格点落在原始数据区间外就直接缺值。
+        interpolation-tolerance: 0
+        # 单次插值拉取包围原始点的点数上限。
+        interpolation-raw-limit: 200000
+        # 可选：位号 → 规范路径映射表，每行 "业务位号 = root.库.设备.测点"。
+        # 文件读不到或映射值不是完整 root. 路径，在驱动 create 阶段直接启动失败。
+        # tag-mapping-file: conf/iotdb-tag-mapping.properties
+        # IoTDB 协议时间本身是 epoch 毫秒；time.* 不改变 SQL 与响应，
+        # 只供 IotdbClient.parseTimestamp/formatTimestamp 统一解析与展示。
+        time:
+          response:
+            source-zone: GMT+8
+            target-zone: GMT+8
+            pattern: "yyyy-MM-dd HH:mm:ss"
+
+    # 力控 pSpace：待现场确认 Java API / REST / JDBC 细节后启用。
+    # forcecontrol_main:
+    #   type: forcecontrol
+    #   protocol: rest
+    #   base-url: http://10.20.1.10:8080
+    #   auth:
+    #     username: ${FC_USER}
+    #     password: ${FC_PASSWORD}

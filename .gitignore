@@ -1,0 +1,33 @@
+target/
+*.class
+*.jar
+*.war
+
+# vendor reference SDKs (not part of the published artifact; may contain
+# site credentials and internal host names)
+reference/
+scripts/
+
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+*.log
+.DS_Store
+Thumbs.db
+
+# local runtime configuration (never commit credentials)
+tsdb.yml
+tsdb.local.yml
+application-local.yml
+ge-it.properties
+hls-it.properties
+iotdb-it.properties
+MEMORY.md
+README.md.bak
+docs/apidocs

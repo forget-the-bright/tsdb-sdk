@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.forget-the-bright</groupId>
+        <artifactId>tsdb-sdk-parent</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>tsdb-sdk-ge</artifactId>
+    <name>tsdb-sdk-ge</name>
+    <description>GE Proficy Historian REST driver</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.forget-the-bright</groupId>
+            <artifactId>tsdb-sdk-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-http</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>fastjson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- 生产只读对比基准：旧 GE_REST_SDK。仅 test scope，绝不进入主 classpath。 -->
+        <dependency>
+            <groupId>io.github.forget-the-bright</groupId>
+            <artifactId>GE_REST_SDK</artifactId>
+            <version>1.0.6.6</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 旧 SDK 的 hutool/fastjson/swagger 在 published pom 中为 provided+optional，
+             不传递，必须显式补齐；同样仅 test scope。 -->
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+            <version>5.8.25</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger</groupId>
+            <artifactId>swagger-annotations</artifactId>
+            <version>1.6.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

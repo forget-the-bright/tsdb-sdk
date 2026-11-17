@@ -1,0 +1,28 @@
+# GE 生产环境只读集成测试配置示例。
+# 复制为 ge-it.properties（已被 .gitignore 排除），填入真实现场凭据。
+# 也可以通过环境变量 GE_IT_USERNAME / GE_IT_PASSWORD / GE_IT_CLIENT_ID /
+# GE_IT_CLIENT_SECRET / GE_IT_TOKEN 提供，环境变量优先于本文件。
+baseUrl=https://172.16.176.9
+username=replace-with-readonly-user
+password=replace-with-password
+clientId=replace-with-oauth-client-id
+clientSecret=replace-with-oauth-client-secret
+# 如果现场提供的是现成 Bearer token，可只填 token，留空其余凭据。
+token=
+# 自签名证书通常同时需要关闭主机名校验；正式接入应改为导入现场根证书。
+trustAll=true
+verifyHostname=false
+connectTimeoutMs=5000
+readTimeoutMs=20000
+maxTags=20
+# 可选：指定一个已知有数据的标签，跳过自动发现。
+tag=
+# 时间格式：铜陵现场 GE 请求与响应都是 UTC，展示需要 GMT+8。
+# 若某项目 GE 自身用 GMT+8，把 requestZone 与 responseSourceZone 改为 GMT+8。
+requestEnabled=true
+requestZone=UTC
+requestPattern=yyyy-MM-dd'T'HH:mm:ssXXX
+responseEnabled=true
+responseSourceZone=UTC
+responseTargetZone=GMT+8
+responsePattern=yyyy-MM-dd HH:mm:ss
