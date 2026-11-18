@@ -48,7 +48,7 @@
         <revision>0.1.0</revision>   <!-- 以后升版本只改这一行 -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <maven.compiler.release>8</maven.compiler.release>
+        <maven.compiler.release>17</maven.compiler.release>
         <hutool.version>5.8.25</hutool.version>
         <fastjson.version>1.2.83</fastjson.version>
         <snakeyaml.version>1.30</snakeyaml.version>
@@ -212,6 +212,36 @@
                             </execution>
                         </executions>
                     </plugin>
+
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>flatten-maven-plugin</artifactId>
+                        <version>1.8.0</version>
+                        <configuration>
+                            <!-- 开启：install/deploy 使用扁平化后的pom -->
+                            <updatePomFile>true</updatePomFile>
+                            <!-- 模式：只解析 revision/changelist/sha1，不展平parent，企业多模块首选 -->
+                            <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>flatten</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>flatten</goal>
+                                </goals>
+                            </execution>
+                            <!-- clean时删掉.flattened-pom.xml，避免残留 -->
+                            <execution>
+                                <id>flatten-clean</id>
+                                <phase>clean</phase>
+                                <goals>
+                                    <goal>clean</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
                 </plugins>
             </build>
         </profile>
