@@ -31,11 +31,17 @@ import io.github.forget_the_bright.tsdb.hls.internal.adapter.HlsWriteAdapter;
  * 适配器都在本包内可见，不扩大公开面，公共层接口的签名与语义保持不变。</p>
  *
  * <p>能力边界：仅支持 {@link Capability#TAG_BROWSE}、
- * {@link Capability#CURRENT_VALUE}、{@link Capability#AGGREGATED_HISTORY}、
+ * {@link Capability#CURRENT_VALUE}、{@link Capability#RAW_HISTORY}、
+ * {@link Capability#AGGREGATED_HISTORY}、
  * {@link Capability#SAMPLED_HISTORY} 与 {@link Capability#CUMULATIVE_DELTA}。
- * 不支持服务端位号检索、按值类型或单位过滤、原始历史、倒序查询、补点策略以及
+ * 不支持服务端位号检索、按值类型或单位过滤、插值、趋势、倒序查询、补点策略以及
  * 写入；命中这些能力时统一抛出 {@link TsdbUnsupportedException}，不会静默降级
  * 或返回伪造数据。</p>
+ *
+ * <p>HLS 没有原生原始点接口，{@link Capability#RAW_HISTORY} 由历史值接口的
+ * 1 秒 {@code BOUND} 桶近似（现场生产同款方案），仅在结果属性
+ * {@code rawSource=hls_history_1s_bound} 下声明，详见
+ * {@code docs/10} §8.1 与 {@code docs/15}。</p>
  *
  * <p>线程安全：本类字段全部为 {@code final}（关闭标记使用 {@link AtomicBoolean}），
  * 适配器无状态，因此客户端可被多线程并发使用。</p>
@@ -55,6 +61,7 @@ public final class HlsClient implements TsdbClient {
     private static final CapabilitySet CAPABILITIES = CapabilitySet.of(
             Capability.TAG_BROWSE,
             Capability.CURRENT_VALUE,
+            Capability.RAW_HISTORY,
             Capability.AGGREGATED_HISTORY,
             Capability.SAMPLED_HISTORY,
             Capability.CUMULATIVE_DELTA);
@@ -170,6 +177,11 @@ public final class HlsClient implements TsdbClient {
     /**
      * 返回历史数据读取接口。
      *
+     * <p>{@code AGGREGATED}、{@code SAMPLED} 走历史宽表接口。HLS 没有原生原始点
+     * 接口，{@code RAW} 由该接口的 1 秒 {@code BOUND} 桶近似（现场生产同款方案），
+     * 结果带 {@code rawSource=hls_history_1s_bound}、{@code rawApproximate=true}
+     * 属性；仅支持 {@code FORWARD}。厂商升级或换现场时按 {@code docs/10} §8.1 复核。</p>
+     *
      * @return 非 {@code null} 的单例适配器
      * @throws IllegalStateException 当客户端已关闭时
      */
@@ -182,10 +194,11 @@ public final class HlsClient implements TsdbClient {
     /**
      * 返回累计量差分视图。
      *
-     * <p>HLS 没有 {@code LAST} 聚合，本实现使用厂商的 {@code BOUND} 列作为每个
-     * 时间桶的边界值，再在内存中与上一桶相减。该语义适用于累计流量、累计电量
-     * 等单调点位；若现场确认 {@code BOUND} 不是区间末值，应改用其他聚合或
-     * 在网关侧做差。</p>
+     * <p>HLS 没有 {@code LAST} 聚合，也没有取单点原始值的接口，本实现使用厂商
+     * {@code BOUND} 列作为每个时间桶的边界值，基线取起点前一个桶，再在内存中
+     * 相邻相减。这是现场生产同款迂回方案，适用于累计流量、累计电量等单调点位；
+     * 普通瞬时量点位会得到无业务意义的差值。{@code BOUND} 语义随厂商版本变化，
+     * 升级或换现场时按 {@code docs/10} §8.1 复核。</p>
      *
      * @return 非 {@code null} 的单例适配器
      * @throws IllegalStateException 当客户端已关闭时

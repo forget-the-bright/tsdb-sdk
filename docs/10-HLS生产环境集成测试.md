@@ -9,11 +9,13 @@
 > 本次实测暴露并修复了 token 获取方式、`Content-Type`、全量标签目录超时和历史
 > 结束时间越界四类问题，详见第 0 节。
 >
-> **等间隔/差分注意**：代码已支持 `SAMPLED` 与 `CUMULATIVE_DELTA`，但 HLS 没有
-> LAST 聚合，只能用 `TagValue_Bound` 充当区间边界值。`BOUND` 是否等于区间末值
-> 尚未在现场确认；新增的 `readsSampledHistoryAndCumulativeDelta` 在 2026-11-12
-> 因代理侧历史查询超时未跑通。未确认 BOUND 语义前，不要把 HLS 差分用于生产结算。
-> 该用例默认跳过，确认 BOUND 语义后可加 `-Dhls.it.delta=true` 执行。
+> **等间隔/差分注意**：HLS 没有 `LAST` 聚合，也没有原生原始点接口，只能用
+> `TagValue_Bound` 充当区间边界值。这是现场生产同款迂回方案：`SAMPLED` 取历史值
+> 接口的 `BOUND` 列，`RAW` 用 1 秒 `BOUND` 桶近似，差分与 `INTERVAL_SUM` 的基线
+> 同样来自 `BOUND`。该方案已按用户 2026-11-18 的定案落地（见 §8.1），不再作为
+> 阻塞项；换厂商版本或换现场时按 §8.1 末尾的复核步骤重新确认。
+> `readsSampledHistoryAndCumulativeDelta` 因为历史查询成本高（多次请求、单次可达数百秒），
+> 默认跳过，需要时加 `-Dhls.it.delta=true` 执行。
 >
 > **复跑记录（2026-11-16 12:38–12:42，Hutool/fastjson 迁移后）**：命令
 > `mvn -o -pl tsdb-sdk-hls -am test "-Dtest=HlsProductionIT" "-DfailIfNoTests=false" "-Dhls.it=true"`。
@@ -36,6 +38,38 @@
 > `common.internal.http`/`json`，**未改请求形状、断言与超时**。
 > 结论：502 是代理侧间歇故障而非 SDK 回归，这一判断得到本轮支持；但 **BOUND 是否等于区间末值
 > 仍未确认**（本次 bound 恰好等于 max，单点样本不能证明语义），差分口径继续维持未确认。
+>
+> **定案（2026-11-18）**：用户确认 HLS 确实没有 `LAST`/原生原始点，`BOUND` 就是现场生产
+> 用来处理该问题的迂回方案，实际生产环境也这么解决。因此：
+> ① 关闭“BOUND 未确认 / 差分不得用于生产结算”这一阻塞性表述，改为「生产同款迂回方案 +
+> 适用前提 + 换版本时复核」（见 §8.1）；
+> ② 公共 `QueryMode.RAW` 在 HLS 上改为调用历史值接口（`interval=1` + `NeedQueryBound=true`），
+> 用 1 秒 `BOUND` 桶近似原始点，并在 `TagSeries.attributes` 标注
+> `rawSource=hls_history_1s_bound`、`rawApproximate=true`；
+> ③ 上面的历史探针记录原样保留，作为升级/换现场时复核的对照基线。
+>
+> **实跑记录（2026-11-18 17:20–17:27，HLS `RAW` 近似与 `INTERVAL_SUM` 轮）**：命令
+> `mvn -o -pl tsdb-sdk-hls -am test "-Dtest=HlsProductionIT" "-DfailIfNoTests=false" "-Dhls.it=true" "-Dhls.it.delta=true"`。
+> 结果 `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`，412.41 s，`BUILD SUCCESS`（17:27:41）。
+> 关键输出：
+> - `RAW`（`readsRawHistoryThroughOneSecondBoundBuckets`）：`samples=300`，
+>   first=`2026-11-18 17:10:50`、last=`2026-11-18 17:15:49`，10 分钟窗按 1 秒桶返回，
+>   `rawSource=hls_history_1s_bound`、`rawApproximate=true` 断言通过；
+> - `INTERVAL_SUM`（`readsIntervalSumFromBoundedEdges`）：`last 24h sum=-9.4`。该位号是指示型
+>   （非累计量）点位，整窗末−首没有业务含义，与「`INTERVAL_SUM` 只适用于累计量点位」的说明一致；
+>   用例只断言「恰好 1 点、时间戳=窗口起点、值是有限数」；
+> - `SAMPLED` + 差分：BOUND 探针 `bound=589.0 / avg=590.1 / min=583.3 / max=595.6`，
+>   5 分钟间隔差分 `points=13`，小时等间隔 `samples=25`；
+> - 当前值 16/16 点位有值、质量全部 GOOD（vendorQuality=1）。
+
+> **实跑记录（2026-11-19 09:35–09:42，差分基线折叠轮）**：同一条命令，
+> `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`，438.17 s，`BUILD SUCCESS`。
+> 关键变化：
+> - 5 分钟差分 `points=12`：1 小时窗口 = 12 个桶，扩展窗取回的「起点前最后一个桶」只作基线、
+>   不输出；旧记录的 13 是 `limit + 1` 越界，已修正；
+> - 稠密网格下整个差分只有 **1 次** `readHistory`（起点 = 窗口起点 − 桶长），
+>   只有样本数对不上或首值为空时才追加 1 次批量 `BOUND` 兜底；
+> - 其余 9 个用例（含 `RAW` 300 个 1 秒桶、`INTERVAL_SUM` 单点）断言未改，全部通过。
 
 ---
 
@@ -84,19 +118,23 @@
 
 与 GE 的 `GeProductionIT` 类似，但按 HLS 的真实能力裁剪：
 
-| 用例 | 覆盖内容 |
-|---|---|
-| `healthAndCapabilities` | 健康检查、能力声明、只读约束 |
-| `browsesRealTagCatalog` | 全量标签目录、精确查标签 |
-| `readsConfiguredPointsCurrentValues` | 批量读取现场点位当前值，逐点输出值/质量/时间 |
-| `readsAggregatedHistoryForFirstPointWithValue` | 24h AVG 区间聚合 |
-| `readsAllFourAggregationColumns` | AVG / MIN / MAX / BOUND 四列，验证 AVG 无质量码的标注 |
-| `invokesNativeHlsEndpoints` | 原生 `queryAllTags`、`getDDBTagValue`、`getHDBTagValueAll`、`rawRequest` |
-| `unwrapsNativeApi` | 原生逃生口 |
+| 用例 | 覆盖内容 | 默认跑 |
+|---|---|---|
+| `healthAndCapabilities` | 健康检查、能力声明（含 `RAW_HISTORY`）、只读约束 | 是 |
+| `browsesRealTagCatalog` | 全量标签目录、精确查标签 | 是 |
+| `readsConfiguredPointsCurrentValues` | 批量读取现场点位当前值，逐点输出值/质量/时间 | 是 |
+| `readsAggregatedHistoryForFirstPointWithValue` | 24h AVG 区间聚合 | 是 |
+| `readsAllFourAggregationColumns` | AVG / MIN / MAX / BOUND 四列，验证 AVG 无质量码的标注 | 是 |
+| `readsRawHistoryThroughOneSecondBoundBuckets` | `history().read(RAW)`：1 秒 `BOUND` 桶近似，校验 `rawSource` / `rawApproximate` 标注与样本时间/值 | 是 |
+| `readsIntervalSumFromBoundedEdges` | `AGGREGATED + INTERVAL_SUM`：两侧 1 分钟 `BOUND` 边缘探测；窗口边缘无值时按 `Assumptions` 记录跳过 | 是 |
+| `invokesNativeHlsEndpoints` | 原生 `queryAllTags`、`getDDBTagValue`、`getHDBTagValueAll`、`rawRequest` | 是 |
+| `unwrapsNativeApi` | 原生逃生口 | 是 |
+| `readsSampledHistoryAndCumulativeDelta` | `SAMPLED` 与 `CUMULATIVE_DELTA`（含 5 分钟任意间隔差分） | 否，需 `-Dhls.it.delta=true` |
 
-HLS 没有原始点、插值、趋势、写入、告警、采集器、系统管理等接口，因此
-没有复制 GE 的 raw/interpolated/trend/system 用例；这不是漏测，而是 HLS
-厂商接口本身的能力边界。
+HLS 没有插值、趋势、写入、告警、采集器、系统管理等接口，因此没有复制 GE 的
+interpolated/trend/system 用例；`RAW` 也不是协议级原始点，而是 1 秒 `BOUND` 桶近似
+（见 §8.1），测试校验的是替代路径与来源标注，不声称与原始点等价。这不是漏测，
+而是 HLS 厂商接口本身的能力边界。
 
 ---
 
@@ -225,11 +263,14 @@ HLS production IT: baseUrl=http://10.10.7.155:9000, points=16, first tag with va
 HLS point E101FIT1001_DACA_PV: value=123.45, quality=GOOD, vendorQuality=1, time=2026-11-10 10:20:00
 ```
 
-历史用例打印点数和首点时间。最终 surefire 应为：
+历史用例打印点数和首点时间。不含差分时最终 surefire 应为：
 
 ```text
-Tests run: 7, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 10, Failures: 0, Errors: 0, Skipped: 1
 ```
+
+（10 个用例里 9 个默认跑 + 差分用例按 `-Dhls.it.delta=true` 门控跳过；加 `-Dhls.it.delta=true`
+后 Skipped 为 0，本轮实测就是 10/10 全绿。）
 
 如果某个点位没有历史数据，`readsAggregatedHistoryForFirstPointWithValue`
 会失败并明确提示该点位在最近 N 小时没有 AVG 历史；可把 `historyHours`
@@ -272,10 +313,78 @@ Tests run: 7, Failures: 0, Errors: 0, Skipped: 0
 | 传输 | HTTPS，自签名证书需 trust-all | HTTP，需显式允许明文 |
 | 认证 | OAuth password grant | user-id/secret-key 换 token |
 | 原生接口 | 92 个端点，`GeEndpoint` + invoke | 4 类接口，DTO + 固定路径 |
-| 历史能力 | RAW/AGGREGATED/INTERPOLATED/SAMPLED/TREND | 仅区间聚合 AVG/MIN/MAX/BOUND |
+| 历史能力 | RAW/AGGREGATED/INTERPOLATED/SAMPLED/TREND | 区间聚合 AVG/MIN/MAX/BOUND + `SAMPLED`；`RAW` 用 1 秒 `BOUND` 桶近似 |
 | 写入 | 有接口但测试禁用 | 驱动本身无写入 |
 | 告警/系统/采集器 | 有只读查询 | 无 |
 | 质量码 | 0/1/2/3 | 0=BAD、1=GOOD |
+
+---
+
+## 8.1 `BOUND` 语义与本 SDK 的处理方式（生产同款迂回方案）
+
+### 是什么
+
+HLS 历史接口（`/hdb/read_hdbtagvalue`）对每个时间桶返回四个统计列，而不是原始点：
+
+| 列 | 含义（厂商侧） |
+|---|---|
+| `TagValue_AVG` / `Quality_AVG` | 桶内平均及其质量（注意：厂商不返回 `Quality_AVG`） |
+| `TagValue_MIN` / `Quality_MIN` | 桶内最小及其质量 |
+| `TagValue_MAX` / `Quality_MAX` | 桶内最大及其质量 |
+| `TagValue_Bound` / `Quality_Bound` | **边界值**，厂商文档未写明取桶首、桶末还是插值边界 |
+
+HLS 没有 GE 的 `LAST` 聚合，也没有原生原始点接口。SDK 需要「桶的边界值」来代表该桶的
+累计量读数，因此统一用 `TagValue_Bound` 顶替。这是**现场生产同款做法**——用户
+2026-11-18 明确确认「实际生产环境也是这么解决的」，因此本 SDK 照此实现，并把
+「为什么用历史值接口代替 raw」写进代码注释（`HlsHistoryAdapter` / `HlsDeltaAdapter`）。
+
+### 三处用法
+
+| 公共入口 | 厂商请求 | 说明 |
+|---|---|---|
+| `history().read(RAW)` | `POST /hdb/read_hdbtagvalue`，`interval=1`、`NeedQueryBound=true` | 每 1 秒桶取 `TagValue_Bound` 作为该秒的代表值，**近似**原始点；仅 `FORWARD`，`FillPolicy` 仅 `NONE`；结果 `attributes` 带 `rawSource=hls_history_1s_bound`、`rawApproximate=true` |
+| `history().read(SAMPLED)` | 同上，按调用方 `interval` | 取 `BOUND` 列作为桶边界值 |
+| `deltaHistory().read(...)` / `INTERVAL_SUM` | 同上，差分基线取起点前 1 桶；`INTERVAL_SUM` 用窗口首/末 1 分钟各探一次 | 差值口径为「本桶边界值 − 上桶边界值」，归属时间戳沿用公共层规则 |
+
+### 适用前提（不是阻塞项）
+
+- 适用于累计量点位（流量总量、电量等）的差分与整窗增量；瞬时量差分没有物理意义。
+- `RAW` 是秒级近似：亚秒变化会被桶内代表值吸收；需要真正原始点时应接厂商 Historian
+  客户端，本 SDK 不声称等价。
+- 时间戳与数值精度受 `BOUND` 与秒桶限制，跨库比对前先统一精度口径（见 README §7.4）。
+- 上述限制已写入 `TagSeries.attributes` 与公共 Javadoc，调用方在数据里就能看见来源。
+
+### 现场探针记录（保留作复核基线）
+
+| 时间 | bound | avg | min | max | 观察 |
+|---|---|---|---|---|---|
+| 2026-11-16 12:42 | 619.2 | 625.9 | 613.9 | 636.1 | 落在 [min,max] 内，不等于 AVG |
+| 2026-11-16 17:03 | 613.2 | 600.3 | 594.7 | 613.3 | 恰好等于 MAX |
+| 2026-11-16（首个样本） | 613.2 | 600.3 | 594.7 | 613.3 | 同上 |
+
+单桶单点无法区分「桶末恰好是最高点」与「BOUND 是 MAX 的别名」；该歧义不影响
+本 SDK 的既定口径（生产同款方案），但换版本/换现场时必须复核。
+
+### 换厂商版本 / 换现场时的复核步骤（只读）
+
+这不是使用前置条件，而是升级时的回归检查：
+
+1. 选一个在 1 分钟内会产生多个原始点的变化型位号（流量、电流、液位），避开常量位号。
+2. 取窗口 `[t0, t0+5min)`，用 `interval=60` 请求历史，记录 5 个桶的
+   `AVG/MIN/MAX/BOUND` 与质量码。
+3. 在同一窗口用 `interval=1` 请求历史（秒级 `BOUND` 序列），作为原始点的近似；
+   若能拿到厂商 Historian 客户端的原始值，优先用它交叉验证。
+4. 对每个 60 秒桶，从秒级序列里取桶内**首值**和**末值**，与 60 秒桶的 `BOUND` 比较：
+   - `BOUND == 桶内末值` → 与 IoTDB/GE 的桶末口径一致，无需调整；
+   - `BOUND == 桶内首值` → 差分整体前移一个桶，`INTERVAL_SUM` 的边缘探测也要改；
+   - 两者都不等 → 第三种语义（插值边界/保持值），需厂商确认公式后重新定义差分口径。
+5. 用至少 3 个不同位号、2 个不同窗口重复第 2–4 步，避免偶然命中极值。
+6. 结论变化时：同步更新本节、README 能力矩阵与 docs/15，并复跑
+   `readsSampledHistoryAndCumulativeDelta`（`-Dhls.it.delta=true`）、
+   `readsRawHistoryThroughOneSecondBoundBuckets` 与 `readsIntervalSumFromBoundedEdges`。
+
+> 秒级 `BOUND` 只是原始点的近似：若位号存在亚秒变化，第 3 步的交叉验证会失真，
+> 此时必须以厂商 Historian 客户端读到的原始值为准。
 
 ---
 

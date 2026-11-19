@@ -32,10 +32,14 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -49,6 +53,12 @@ class HlsClientTest {
     private HttpServer server;
     private HlsClient client;
     private final AtomicReference<String> historyRequest = new AtomicReference<String>();
+    private final java.util.List<String> historyRequests =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
+    /**
+     * 宽表历史接口的应答生成器；用例可替换它来固定「稠密 / 缺桶」两类响应。
+     */
+    private volatile Function<String, String> hdbResponse;
     private final AtomicReference<String> lastToken = new AtomicReference<String>();
     private final AtomicReference<String> tokenRequestMethod = new AtomicReference<String>();
     private final AtomicReference<String> tokenRequestContentType = new AtomicReference<String>();
@@ -85,14 +95,15 @@ class HlsClientTest {
         });
         server.createContext("/hdb/read_hdbtagvalue", exchange -> {
             lastToken.set(exchange.getRequestHeaders().getFirst("token"));
-            historyRequest.set(readBody(exchange));
-            respond(exchange, 200, "{\"code\":0,\"msg\":\"ok\",\"Data\":{\"HDBTagValueList\":["
-                    + "{\"Index\":0,\"TagType\":7,\"TagName\":\"AI-101\",\"OneTagHDBValueList\":["
-                    + "{\"TagValueTime\":1700000000,\"TagValue_AVG\":\"1.5\",\"TagValue_MIN\":\"1.0\","
-                    + "\"TagValue_MAX\":\"2.0\",\"TagValue_Bound\":\"1.0\","
-                    + "\"Quality_MIN\":1,\"Quality_MAX\":0,\"Quality_Bound\":1}]}]}}");
+            String request = readBody(exchange);
+            historyRequest.set(request);
+            historyRequests.add(request);
+            respond(exchange, 200, hdbResponse.apply(request));
         });
         server.start();
+        // 起点窗与终点窗返回不同的边界值，供 INTERVAL_SUM 的末−首断言；
+        // 其余请求保持 1.0，避免影响既有差分/历史用例。
+        hdbResponse = HlsClientTest::defaultHdbBody;
 
         TsdbInstanceConfig config = new TsdbInstanceConfig();
         config.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
@@ -117,7 +128,10 @@ class HlsClientTest {
     void exposesDeclaredCapabilities() {
         assertTrue(client.capabilities().supports(Capability.TAG_BROWSE));
         assertTrue(client.capabilities().supports(Capability.CURRENT_VALUE));
+        assertTrue(client.capabilities().supports(Capability.RAW_HISTORY));
         assertTrue(client.capabilities().supports(Capability.AGGREGATED_HISTORY));
+        assertTrue(client.capabilities().supports(Capability.SAMPLED_HISTORY));
+        assertTrue(client.capabilities().supports(Capability.CUMULATIVE_DELTA));
         assertFalse(client.capabilities().supports(Capability.WRITE));
         assertFalse(client.writeSession().isWritable());
     }
@@ -211,27 +225,148 @@ class HlsClientTest {
     }
 
     @Test
-    void rejectsRawHistory() {
+    void readsRawHistoryViaOneSecondBoundBuckets() {
+        historyRequests.clear();
         HistoryQuery query = HistoryQuery.builder()
                 .tags("AI-101")
                 .range(Instant.ofEpochSecond(1699999000L), Instant.ofEpochSecond(1700001000L))
                 .mode(io.github.forget_the_bright.tsdb.common.model.QueryMode.RAW)
+                .maxPoints(300)
+                .build();
+        List<TagSeries> series = client.history().read(query);
+        assertEquals(1, series.size());
+        assertEquals(1, series.get(0).getSamples().size());
+        assertEquals(Instant.ofEpochSecond(1700000000L), series.get(0).getSamples().get(0).getTimestamp());
+        assertEquals(1.0d, series.get(0).getSamples().get(0).getDoubleValue(), 0.0001d);
+        assertEquals("hls_history_1s_bound", series.get(0).getAttributes().get("rawSource"));
+        assertEquals("true", series.get(0).getAttributes().get("rawApproximate"));
+
+        String request = historyRequests.get(0);
+        assertTrue(request.contains("\"interval\":1"));
+        assertTrue(request.contains("\"NeedQueryBound\":true"));
+        assertFalse(request.contains("\"NeedQueryAVG\":true"));
+    }
+
+    @Test
+    void rejectsBackwardRawHistory() {
+        HistoryQuery query = HistoryQuery.builder()
+                .tags("AI-101")
+                .range(Instant.ofEpochSecond(1699999000L), Instant.ofEpochSecond(1700001000L))
+                .mode(io.github.forget_the_bright.tsdb.common.model.QueryMode.RAW)
+                .direction(Direction.BACKWARD)
                 .build();
         assertThrows(TsdbUnsupportedException.class, () -> client.history().read(query));
     }
 
     @Test
-    void rejectsIntervalSumAggregation() {
-        // INTERVAL_SUM（片内末值减首值）不在 HLS 白名单内，
-        // 必须显式拒绝，不得静默按 AVG 处理。
+    void computesIntervalSumFromTwoOneMinuteEdgeProbes() {
+        Instant start = Instant.ofEpochSecond(1700000000L);
+        Instant end = Instant.ofEpochSecond(1700000600L);
+        historyRequests.clear();
         HistoryQuery query = HistoryQuery.builder()
                 .tags("AI-101")
-                .range(Instant.ofEpochSecond(1699999000L), Instant.ofEpochSecond(1700001000L))
+                .range(start, end)
                 .mode(io.github.forget_the_bright.tsdb.common.model.QueryMode.AGGREGATED)
                 .aggregation(Aggregation.INTERVAL_SUM)
                 .interval(Duration.ofSeconds(60))
                 .build();
-        assertThrows(TsdbUnsupportedException.class, () -> client.history().read(query));
+        List<TagSeries> series = client.history().read(query);
+        assertEquals(1, series.get(0).getSamples().size());
+        assertEquals(32.0d, series.get(0).getSamples().get(0).getDoubleValue(), 0.0001d);
+        assertEquals(start, series.get(0).getSamples().get(0).getTimestamp());
+        assertEquals(2, historyRequests.size());
+        assertTrue(historyRequests.get(0).contains("\"interval\":1"));
+        assertTrue(historyRequests.get(1).contains("\"interval\":1"));
+    }
+
+    @Test
+    void intervalSumEmitsNoPointWhenAnEdgeIsMissing() {
+        HistoryQuery query = HistoryQuery.builder()
+                .tags("AI-999")
+                .range(Instant.ofEpochSecond(1700000000L), Instant.ofEpochSecond(1700000600L))
+                .mode(io.github.forget_the_bright.tsdb.common.model.QueryMode.AGGREGATED)
+                .aggregation(Aggregation.INTERVAL_SUM)
+                .interval(Duration.ofSeconds(60))
+                .build();
+        List<TagSeries> series = client.history().read(query);
+        assertTrue(series.get(0).getSamples().isEmpty());
+    }
+
+    @Test
+    void readsFiveMinuteCumulativeDeltaByInterval() {
+        historyRequests.clear();
+        List<DeltaSeries> deltas = client.deltaHistory().readByInterval(
+                Arrays.asList("AI-101"),
+                Instant.ofEpochSecond(1699999200L), Instant.ofEpochSecond(1700001000L),
+                300_000L, Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 64);
+        assertEquals(1, deltas.size());
+        assertFalse(deltas.get(0).getPoints().isEmpty());
+        assertTrue(historyRequests.get(0).contains("\"interval\":300"));
+    }
+
+    @Test
+    void foldsTheBaselineBucketIntoOneHistoryRequestForDenseMultiTagDelta() {
+        // 起点 1699999200、终点 1700001000、300 秒桶 → 6 个窗口桶 + 1 个基线桶
+        Map<String, List<Object[]>> body = new LinkedHashMap<String, List<Object[]>>();
+        body.put("AI-101", ramp(1699998900L, 300L, 7, 100.0, 10.0));
+        body.put("AI-102", ramp(1699998900L, 300L, 7, 200.0, 5.0));
+        hdbResponse = request -> hdbBody(body);
+        historyRequests.clear();
+
+        List<DeltaSeries> deltas = client.deltaHistory().readByInterval(
+                Arrays.asList("AI-101", "AI-102"),
+                Instant.ofEpochSecond(1699999200L), Instant.ofEpochSecond(1700001000L),
+                300_000L, Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 6);
+
+        // 稠密响应：基线折进扩展桶，整批位号只发 1 次请求
+        assertEquals(1, historyRequests.size());
+        String request = historyRequests.get(0);
+        assertTrue(request.contains("\"interval\":300"));
+        assertTrue(request.contains("\"startTime\":1699998900"));
+        assertEquals(6, deltas.get(0).getPoints().size());
+        assertEquals(10.0, deltas.get(0).getPoints().get(0).getDelta(), 0.0001);
+        assertEquals(5.0, deltas.get(1).getPoints().get(0).getDelta(), 0.0001);
+        assertTrue(deltas.get(0).getPoints().size() <= 6);
+    }
+
+    @Test
+    void fallsBackToABatchedBaselineRequestForTheTagMissingTheExtendedBucket() {
+        // 首轮：AI-101 稠密 7 个，AI-102 只回窗口内 1 个（扩展桶缺失）；
+        // 兜底轮：请求里不再含 AI-101，只回 AI-102 的基线。
+        hdbResponse = request -> {
+            if (request.contains("AI-101")) {
+                Map<String, List<Object[]>> body = new LinkedHashMap<String, List<Object[]>>();
+                body.put("AI-101", ramp(1699998900L, 300L, 7, 100.0, 10.0));
+                body.put("AI-102", ramp(1700000000L, 300L, 1, 9.0, 0.0));
+                return hdbBody(body);
+            }
+            Map<String, List<Object[]>> body = new LinkedHashMap<String, List<Object[]>>();
+            body.put("AI-102", ramp(1699998900L, 300L, 1, 5.0, 0.0));
+            return hdbBody(body);
+        };
+        historyRequests.clear();
+
+        List<DeltaSeries> deltas = client.deltaHistory().readByInterval(
+                Arrays.asList("AI-101", "AI-102"),
+                Instant.ofEpochSecond(1699999200L), Instant.ofEpochSecond(1700001000L),
+                300_000L, Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 64);
+
+        assertEquals(2, historyRequests.size());
+        String fallback = historyRequests.get(1);
+        assertTrue(fallback.contains("AI-102"));
+        assertFalse(fallback.contains("AI-101"));
+        assertTrue(fallback.contains("\"startTime\":1699998900"));
+        assertEquals(10.0, deltas.get(0).getPoints().get(0).getDelta(), 0.0001);
+        assertEquals(4.0, deltas.get(1).getPoints().get(0).getDelta(), 0.0001);
+    }
+
+    @Test
+    void rejectsSubSecondIntervalDelta() {
+        assertThrows(TsdbUnsupportedException.class,
+                () -> client.deltaHistory().readByInterval(
+                        Arrays.asList("AI-101"),
+                        Instant.ofEpochSecond(1700000000L), Instant.ofEpochSecond(1700001000L),
+                        1500L, Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 64));
     }
 
     @Test
@@ -333,5 +468,77 @@ class HlsClientTest {
             }
             return new String(out.toByteArray(), StandardCharsets.UTF_8);
         }
+    }
+
+    /**
+     * 默认宽表应答：AI-101 单点，{@code TagValue_Bound} 随起点窗变化。
+     *
+     * @param request 请求体
+     * @return 应答 JSON
+     */
+    private static String defaultHdbBody(String request) {
+        String bound = "1.0";
+        if (request.contains("\"startTime\":1700000000")) {
+            bound = "10.0";
+        } else if (request.contains("\"startTime\":1700000540")) {
+            bound = "42.0";
+        }
+        return "{\"code\":0,\"msg\":\"ok\",\"Data\":{\"HDBTagValueList\":["
+                + "{\"Index\":0,\"TagType\":7,\"TagName\":\"AI-101\",\"OneTagHDBValueList\":["
+                + "{\"TagValueTime\":1700000000,\"TagValue_AVG\":\"1.5\",\"TagValue_MIN\":\"1.0\","
+                + "\"TagValue_MAX\":\"2.0\",\"TagValue_Bound\":\"" + bound + "\","
+                + "\"Quality_MIN\":1,\"Quality_MAX\":0,\"Quality_Bound\":1}]}]}}";
+    }
+
+    /**
+     * 按位号生成宽表 BOUND 应答；每个位号的 {@code TagValueTime} 与
+     * {@code TagValue_Bound} 一一对应。
+     *
+     * @param series 位号 → 「时间, 值」二元组列表，按输出顺序
+     * @return 应答 JSON
+     */
+    private static String hdbBody(Map<String, List<Object[]>> series) {
+        StringBuilder list = new StringBuilder();
+        for (Map.Entry<String, List<Object[]>> entry : series.entrySet()) {
+            if (list.length() > 0) {
+                list.append(',');
+            }
+            list.append("{\"Index\":0,\"TagType\":7,\"TagName\":\"").append(entry.getKey())
+                    .append("\",\"OneTagHDBValueList\":[");
+            List<Object[]> points = entry.getValue();
+            for (int i = 0; i < points.size(); i++) {
+                if (i > 0) {
+                    list.append(',');
+                }
+                Object time = points.get(i)[0];
+                Object value = points.get(i)[1];
+                list.append("{\"TagValueTime\":").append(time)
+                        .append(",\"TagValue_AVG\":\"").append(value)
+                        .append("\",\"TagValue_MIN\":\"").append(value)
+                        .append("\",\"TagValue_MAX\":\"").append(value)
+                        .append("\",\"TagValue_Bound\":\"").append(value)
+                        .append("\",\"Quality_MIN\":1,\"Quality_MAX\":1,\"Quality_Bound\":1}");
+            }
+            list.append("]}");
+        }
+        return "{\"code\":0,\"msg\":\"ok\",\"Data\":{\"HDBTagValueList\":[" + list + "]}}";
+    }
+
+    /**
+     * 生成等间隔的「时间, 值」序列。
+     *
+     * @param first  首个时间（秒）
+     * @param step   间隔（秒）
+     * @param count  点数
+     * @param base   首个数值
+     * @param delta  相邻数值增量
+     * @return 序列
+     */
+    private static List<Object[]> ramp(long first, long step, int count, double base, double delta) {
+        List<Object[]> points = new ArrayList<Object[]>(count);
+        for (int i = 0; i < count; i++) {
+            points.add(new Object[]{first + i * step, base + i * delta});
+        }
+        return points;
     }
 }

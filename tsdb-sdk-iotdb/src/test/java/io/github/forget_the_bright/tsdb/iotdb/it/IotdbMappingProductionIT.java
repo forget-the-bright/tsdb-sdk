@@ -37,7 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 使用 192.168.3.199 上 root.sdk_it 测试库验证“相对位号 + 默认数据库”、等间隔与日粒度差分。
+ * 使用生产现场 IoTDB（连接信息见 {@link IotdbItConfig}）上的 root.sdk_it 测试库验证
+ * “相对位号 + 默认数据库”、等间隔与日粒度差分。
  *
  * <p><b>窗口不取“现在往前推 N 天”</b>：测试库的合成数据是一次性写入的固定区间
  * （每小时 +12.5），一旦按当前时间取窗，几天后整个窗口就落在数据内部，
@@ -55,9 +56,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @EnabledIfSystemProperty(named = "iotdb.it", matches = "true")
 class IotdbMappingProductionIT {
 
-    private static final String BASE_URL = "http://192.168.3.199:18080";
-
     private static final String TAG = "device01.flow";
+
+    /** IT 专用库：相对位号的默认库（测试夹具，不是连接地址）。 */
+    private static final String SDK_IT_DATABASE = "root.sdk_it";
 
     /** 每小时恒定 +12.5，所以任一完整日桶的增量都是 300。 */
     private static final double DAILY_DELTA = 300.0;
@@ -163,12 +165,12 @@ class IotdbMappingProductionIT {
     private static IotdbClient client(String transport, String zone) {
         TsdbInstanceConfig instance = new TsdbInstanceConfig();
         instance.setType("iotdb");
-        instance.setBaseUrl(BASE_URL);
-        instance.getAuth().setUsername("root");
-        instance.getAuth().setPassword("root");
+        instance.setBaseUrl(IotdbItConfig.required("baseUrl"));
+        instance.getAuth().setUsername(IotdbItConfig.required("username"));
+        instance.getAuth().setPassword(IotdbItConfig.required("password"));
         instance.getOptions().put("transport", transport);
-        instance.getOptions().put("rpc-port", "6667");
-        instance.getOptions().put("default-database", "root.sdk_it");
+        instance.getOptions().put("rpc-port", IotdbItConfig.text("rpcPort", "6667"));
+        instance.getOptions().put("default-database", SDK_IT_DATABASE);
         if (zone != null) {
             instance.getOptions().put("zone", zone);
         }

@@ -9,9 +9,11 @@
  * <ul>
  *   <li>{@code HlsTagCatalogAdapter} —— 标签目录浏览与单标签查询。</li>
  *   <li>{@code HlsCurrentValueAdapter} —— 最新值（实时库 {@code /ddb/read_ddbtagvalue}）。</li>
- *   <li>{@code HlsHistoryAdapter} —— 历史库查询与各历史模式；改时间窗、方向、条数在这里。</li>
+ *   <li>{@code HlsHistoryAdapter} —— 历史库查询与各历史模式；改时间窗、方向、条数在这里。
+ *       {@code RAW} 由历史值接口的 1 秒 {@code BOUND} 桶近似（生产同款方案）。</li>
  *   <li>{@code HlsDeltaAdapter} —— 累计量差分，按 {@code DeltaReader} 契约用 {@code BOUND}
- *       近似桶末值；该语义仍待现场确认（见 {@code docs/10}），不要当成已裁决口径。</li>
+ *       作桶边界值、起点前一桶作基线；这是现场生产同款做法，升级或换现场时按
+ *       {@code docs/10} §8.1 复核，不构成使用前置阻塞。</li>
  *   <li>{@code HlsWriteAdapter} —— 只读占位实现：{@code isWritable()} 恒 {@code false}，
  *       {@code write} 一律抛 {@code TsdbUnsupportedException}。保留实例是为了让公共层
  *       统一探测可写性，而不是把 {@code null} 传给调用方。</li>

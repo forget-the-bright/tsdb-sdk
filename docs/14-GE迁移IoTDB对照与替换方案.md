@@ -411,12 +411,16 @@ IoTDB 侧没有 per-tag 枚举，塌缩为“整条 SQL 成功”或“失败/�
 
 ### 8.1 L1 —— SDK 离线单测（纳入 `mvn -o test`）
 
-当前全绿：**reactor 258 例**（common 61 / hls 14 / ge 22 / iotdb 160 / spring-boot-starter 1）。
-iotdb 模块 160 例 = `IotdbClientTest` 32 + `IotdbQueryServiceTest` 35 + `IotdbSqlTest` 23 +
+当前全绿：**reactor 290 例**（common 77 / hls 20 / ge 28 / iotdb 164 / spring-boot-starter 1）。
+差分基线折叠轮新增：`HistorianUnitTest` 的 `countOf`/`resolveCount`、`IotdbQueryServiceTest` 的
+扩展桶兜底与月粒度折叠、`HlsClientTest` 的稠密单请求/缺桶兜底、`GeClientTest` 的折叠请求形态与
+`count` 推导/冲突，各驱动旧用例按「1 次主查询」重写期望。
+iotdb 模块 164 例 = `IotdbClientTest` 32 + `IotdbQueryServiceTest` 39 + `IotdbSqlTest` 23 +
 `IotdbTagPathTest` 24 + `IotdbTagResolverTest` 17 + `IotdbConfigTest` 8 + `GroupingTest` 9 +
 `SeriesKeyIndexTest` 6 + `IotdbRestQueryExecutorTest` 6。基线（第一轮改造前）102 例，上轮定稿
 157 例，位号路径模型 + 按库批量后 234 例，2026-11-16 Hutool/fastjson 迁移 + 门户拆分后 258 例
-（common 新增 `Texts`/`BasicAuth`/`JsonText`/`HttpTransport`/`HttpErrors`/`TsdbInstanceConfig` 用例）。
+（common 新增 `Texts`/`BasicAuth`/`JsonText`/`HttpTransport`/`HttpErrors`/`TsdbInstanceConfig` 用例），
+2026-11-18 HLS `RAW` 轮 279 例，2026-11-19 差分折叠轮 **290 例**。
 
 方案 §3 要求的 L1 覆盖点逐项对号：
 
@@ -445,6 +449,11 @@ iotdb 模块 160 例 = `IotdbClientTest` 32 + `IotdbQueryServiceTest` 35 + `Iotd
 
 `IotdbContractProbeIT` **24 例**（原 6 条线缆契约 + 本轮 P1–P10 共 18 例）+ `IotdbMappingProductionIT` 3 例 + `IotdbProductionIT` 11 例 = **38 例**。
 门控用例总数为 **45 例**，余下 7 例是 §8.3 的 `IotdbTierParityIT`（同库双跑对数），不属契约层。每项都有实测结论：
+
+> **连接配置（2026-11-18 起）**：四个 IT 类的地址、账号、RPC 端口、测试点位全部经
+> `IotdbItConfig` 读取，优先级为「系统属性 `iotdb.it.<key>` → 环境变量 `IOTDB_IT_<KEY>` →
+> 模块根 `iotdb-it.properties`（回退仓库根同名文件）」，取不到必填键直接报错并指出键名。
+> 测试源码里不再有硬编码的现场地址或账号；`iotdb-it.properties` 被 `.gitignore` 排除。
 
 > **计数更正（2026-11-16 包结构归位轮，按当次 surefire XML 复核）**：本文与模块 README 早先写的
 > 「门控 44 / 契约层 37 / `IotdbProductionIT` 10」漏计了
@@ -518,7 +527,7 @@ iotdb 模块 160 例 = `IotdbClientTest` 32 + `IotdbQueryServiceTest` 35 + `Iotd
 生产 IT 本轮未重跑（历史报告，L1 已覆盖其映射语义）。
 
 **2026-11-16 Hutool/fastjson 迁移 + 门户拆分后复跑（只读，12:25–12:42）**：L1 离线
-**258 例全绿**（common 61 / hls 14 / ge 22 / iotdb 160 / starter 1）。门控三层全部重跑：
+**278 例全绿**（common 74 / hls 17 / ge 24 / iotdb 162 / starter 1）。门控三层全部重跑：
 GE `GeProductionIT` 10 + `GeComparisonIT` 9 **19 例全绿**，逐点归一化对比 `MATCH=520 DIFF=0
 OLD_ONLY=0 NEW_ONLY=0`（14 项 PROBE 仍是 17/19 与 24h 口径差异，非 SDK 分歧）；IoTDB 45 例中
 **42 绿**，`IotdbProductionIT#readsRawAndHourlyHistory` 3 例失败仍是默认位号
@@ -535,7 +544,7 @@ max=636.1`——归因于现场反向代理抖动（与第 2 项风险一致）�
 18 个装配层类下沉 `<vendor>/internal/adapter`、新增 12 个 `package-info.java`；
 不改逻辑、断言、配置键与 SQL 语义。复跑结果：
 
-- L1 离线 `mvn -o test` **258 全绿**（common 61 / hls 14 / ge 22 / iotdb 160 / starter 1，
+- L1 离线 `mvn -o test` **278 全绿**（common 74 / hls 17 / ge 24 / iotdb 162 / starter 1，
   按当次 23 个 surefire XML 求和，0 fail / 0 err / 0 skip）；
 - IoTDB 门控 **45/45 全绿、0 skipped**（默认档位 `database`）。默认位号
   `root.factory.device01.temperature` 本次在 now−30d 窗内有原始点，三通道
@@ -549,6 +558,17 @@ max=636.1`——归因于现场反向代理抖动（与第 2 项风险一致）�
 
 **这一轮不构成下面这道门槛的证据**：结构移动只证明「搬完还能跑通同样的语句」，
 不证明 GE 与 IoTDB 两边取数一致。
+
+**2026-11-18 HLS `RAW` 近似轮复跑（只读，17:20–17:29）**：驱动侧只改 HLS（`RAW` 走历史值接口的
+1 秒 `BOUND` 桶），IoTDB 只把生产 IT 的连接配置统一到 `IotdbItConfig` + `iotdb-it.properties`，
+**查询语义未改**。三库实跑：
+
+- L1 离线 **279 全绿**（common 74 / hls 18 / ge 24 / iotdb 162 / starter 1）；
+- IoTDB 门控 **45/45 全绿、0 skipped**（27.4 s，配置统一后首跑），三通道 raw=1 / hourly=200 /
+  deltas=169、`serverVersion=2.0.11`，`IotdbTierParityIT` 七族仍 `diffs=0`；
+- GE 门控 **19/19 全绿**，`MATCH=2021 DIFF=0 OLD_ONLY=0 NEW_ONLY=0 PROBE=29`（见 `docs/09` §6.4）；
+- HLS 门控 **10/10 全绿**（`-Dhls.it.delta=true`，412 s），`RAW` 300 个 1 秒桶样本、5 分钟差分
+  `points=13`（见 `docs/10` 实跑记录）。
 
 **尚未执行的是另一半：GE ↔ IoTDB 的业务级对数**——同窗同位号两边取数，**每条差异必须归因打标**，
 只允许 D 类用容差：
@@ -625,14 +645,14 @@ max=636.1`——归因于现场反向代理抖动（与第 2 项风险一致）�
 
 | GE 符号 | 类别 | IoTDB 落地 | 分级 |
 |---|---|---|---|
-| `DataApiInvoker.getSampledByRequestParamPost` | 实时值 / 插值曲线 | 按 samplingMode 分流：实时值→SELECT LAST（按数据库批量）；插值→SDK 内存网格 start+i*step + 包围原始点线性内插 | A（缺测点不占位、无质量码属 X） |
+| `DataApiInvoker.getSampledByRequestParamPost` | 实时值 / 采样曲线 / 整窗累计（多形态） | 按 samplingMode/calculationMode 分流：CurrentValue→SELECT LAST（按数据库批量）；Interpolated→SDK 内存网格 start+i*step + 包围原始点线性内插；Calculated+SumValue(count=1)→first_value/last_value 整窗末−首；多桶 SumValue→公共层无等价（GROUP BY 只能出 LAST，不是桶内末−首） | A + X（24 与 17/19 数值不等属 X，需业务裁决） |
 | `DataApiInvoker.getCurrentValuePost` | 实时值 | SELECT LAST `dev`.`a`, `dev`.`b` FROM root.db 按数据库分组（跨库拆多条），结果按 Timeseries 列建索引后按入参顺序回填；缺数补 null 占位 | A（X：无逐点质量码） |
 | `DataApiInvoker.getInterpolatedByRequestParamPost` | 插值曲线 | SDK 内存网格 + 前后包围原始点线性内插（不用 FILL(LINEAR)，它只在已生成桶之间填）；批量形态每块三条多列 SQL，取数不足逐位号补采 | A + X（窗口外不外推，interpolation-tolerance=0） |
 | `DataApiInvoker.getIntervalValueBySumTag` | 区间累计（首末差） | SELECT first_value(`dev`.`m`), last_value(`dev`.`m`), … FROM root.db WHERE time>=s AND time<e（每位号一对列，整批一次往返），内存 BigDecimal 末-首，每位号单点 | A + X（GE 的 17/19 只取 GOOD 点，IoTDB 无此前提） |
 | `DataApiInvoker.getHistorianDataByInterpolated` | 插值曲线（便捷重载） | 同上：SDK 内存网格插值，点数由 count/interval 表达 | A |
 | `DataApiInvoker.getRawDataByRequestParamPost` | 原始值反查 | SELECT `dev`.`m`, `dev`.`m2` FROM root.db WHERE time>=s AND time<e ORDER BY TIME [DESC] LIMIT<合并行数预算>；多列共享 LIMIT 会饿死稀疏位号，故不足列逐位号补采（maxPoints+1 探测截断，分页 OFFSET 仅逐位号形态） | E（质量码部分 X） |
-| `DataApiInvoker.getHistorianIntervalValueByInterpolated` | 区间值（插值） | SDK 内存网格插值；若业务实为等间隔末值则走 GROUP BY last_value | A |
-| `DataApiInvoker.getHistorianIntervalValueBySampled` | 区间值（等间隔） | SELECT last_value(`dev`.`m`), last_value(`dev`.`m2`) FROM root.db GROUP BY ([s,e),`<lit>`) FILL(PREVIOUS)，lit 为任意 Duration 字面量；行数只等于桶数、与列数无关 | E（受服务端 GROUP BY 10000 行上限约束） |
+| `DataApiInvoker.getHistorianIntervalValueByInterpolated` | 区间累计差值列表（插值型） | 旧方法返回逐间隔差值，不是插值曲线：IoTDB 用 GROUP BY ([s,e),`<lit>`) 取 LAST + 起点前基线，相邻相减；不做边界插值、实时值补齐、BAD=0、两位小数 | B（语义不等价，需业务裁决；要旧数值只能保留业务侧后处理） |
+| `DataApiInvoker.getHistorianIntervalValueBySampled` | 区间累计差值列表（采样型） | 同族差值列表：last_value 分桶 + 基线相邻相减（`intervalDeltas`），桶网格锚在 begin；参考实现的插值/实时补齐/两位小数不实现 | B + X（语义与时间戳均不等价） |
 | `DataApiInvoker.getCalculatedByRequestParamPost` | 服务端聚合 | SELECT `<FN>`(`dev`.`m`), `<FN>`(`dev`.`m2`) FROM root.db GROUP BY ([s,e),`<lit>`)；SumValue=24（末−首）改走 first_value/last_value 单窗单值 | E（INTERVAL_SUM 为 A + X） |
 | `DataApiInvoker.getInterpolatedByRequestParam` | 插值曲线（旧 GET） | 同插值族：SDK 内存网格内插，无 GET 线缆对应物 | A |
 | `DataApiInvoker.configureQueryResultByPathVariable` | 原生逃生口 | 无等价：IoTDB 结果上限是服务端配置（实测 GROUP BY 10000 行），只读切换不允许改配置 | N |

@@ -207,6 +207,28 @@ public final class IotdbQueryService implements AutoCloseable {
     }
 
     /**
+     * 按任意毫秒间隔批量计算累计量差分。
+     *
+     * <p>起点不归整，作为分桶网格锚点；间隔以毫秒换算成 {@code 5m}/{@code 250ms}
+     * 等字面量。其余分块、基线与失败上抛语义同 {@link #deltasBatch}。</p>
+     *
+     * @param tags           位号列表
+     * @param start          起点（含），同时是分桶网格锚点
+     * @param end            终点（不含）
+     * @param intervalMillis 间隔毫秒数，必须大于 0
+     * @param fill           空桶填充策略
+     * @param direction      返回方向
+     * @param maxPoints      每位号最大点数
+     * @return 位号绝对路径 → 差分点列表
+     */
+    public Map<String, List<DeltaPoint>> deltasByIntervalBatch(List<IotdbTagPath> tags, Instant start,
+                                                               Instant end, long intervalMillis,
+                                                               FillPolicy fill, Direction direction,
+                                                               int maxPoints) {
+        return delta.deltasBatchByInterval(tags, start, end, intervalMillis, fill, direction, maxPoints);
+    }
+
+    /**
      * 读取单个位号的原始点。
      *
      * @param path      完整序列路径
@@ -287,6 +309,24 @@ public final class IotdbQueryService implements AutoCloseable {
                                    TimeGranularity granularity, FillPolicy fill,
                                    Direction direction, int maxPoints) {
         return delta.deltas(path, start, end, granularity, fill, direction, maxPoints);
+    }
+
+    /**
+     * 按任意毫秒间隔计算单个位号的累计量差分。
+     *
+     * @param path           完整序列路径
+     * @param start          起点（含），同时是分桶网格锚点
+     * @param end            终点（不含）
+     * @param intervalMillis 间隔毫秒数，必须大于 0
+     * @param fill           空桶填充策略
+     * @param direction      返回方向
+     * @param maxPoints      最大点数
+     * @return 差分点列表，非 {@code null}
+     */
+    public List<DeltaPoint> deltasByInterval(String path, Instant start, Instant end,
+                                             long intervalMillis, FillPolicy fill,
+                                             Direction direction, int maxPoints) {
+        return delta.deltasByInterval(path, start, end, intervalMillis, fill, direction, maxPoints);
     }
 
     /**

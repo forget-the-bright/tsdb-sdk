@@ -288,7 +288,7 @@ public final class GeNativeApi {
      * @param end             区间结束时刻（不含）
      * @param calculationMode GE 计算模式编号（如 1=Average、9=RawTotal、
      *                        17=FirstRawValue、19=LastRawValue、24=SumValue）
-     * @param count           每个间隔内的点数，小于 1 时按 1 处理
+     * @param count           区间（桶）个数，即每个间隔出一个点，共取几个间隔；小于 1 时按 1 处理
      * @param intervalMillis  间隔毫秒数，小于 1 时按 1 处理
      * @return 每个位号一个序列，非 {@code null}
      */
@@ -315,7 +315,7 @@ public final class GeNativeApi {
      * @param start           区间起始时刻（含）
      * @param end             区间结束时刻（不含）
      * @param calculationMode GE 计算模式编号
-     * @param count           每个间隔内的点数，小于 1 时按 1 处理
+     * @param count           区间（桶）个数，小于 1 时按 1 处理
      * @param intervalMillis  间隔毫秒数，小于 1 时按 1 处理
      * @return 每个位号一个序列，非 {@code null}
      */

@@ -247,14 +247,14 @@ for (TagSample ts : now) {
 
 | mode | HLS | GE | IoTDB |
 |---|---|---|---|
-| `RAW` | ❌ 抛 `TsdbUnsupportedException` | `POST /v1/datapoints/raw`（`GET_RAW_DATA_BY_REQUEST_PARAM_POST`），query 标量 + body `tagNames` | 多列 `SELECT E(p1), E(p2) … FROM <前缀> WHERE time >= s AND time < e ORDER BY TIME [ASC\|DESC] LIMIT <预算>`，欠采列逐位号补采 |
+| `RAW` | ✅ 用历史值接口替代：`POST /hdb/read_hdbtagvalue`，`interval=1` + `NeedQueryBound=true`，每 1 秒桶取 `TagValue_Bound` 近似原始点；结果 `attributes` 带 `rawSource=hls_history_1s_bound`、`rawApproximate=true`；仅 `FORWARD`、`FillPolicy` 仅 `NONE` | `POST /v1/datapoints/raw`（`GET_RAW_DATA_BY_REQUEST_PARAM_POST`），query 标量 + body `tagNames` | 多列 `SELECT E(p1), E(p2) … FROM <前缀> WHERE time >= s AND time < e ORDER BY TIME [ASC\|DESC] LIMIT <预算>`，欠采列逐位号补采 |
 | `AGGREGATED` | `POST /hdb/read_hdbtagvalue`，`interval` 秒 + `NeedQueryAVG/MIN/MAX/Bound` 四布尔 | `POST /v1/datapoints/calculated`（`GET_CALCULATED_BY_REQUEST_PARAM_POST`），`calculationMode` + `intervalMs` + `count` | 多列 `SELECT AVG(E(p)), … FROM <前缀> GROUP BY ([s,e),<字面量>) [FILL(…)]` |
-| `AGGREGATED` + `INTERVAL_SUM` | ❌ 抛 | `POST /v1/datapoints/calculated` **×2**：`calculationMode=17`（FirstRawValue）与 `19`（LastRawValue），`count=1`、`intervalMs=1`，末−首（`GeNativeApi.readIntervalSum`，`:460`） | `SELECT first_value(E(p)), last_value(E(p)), … FROM <前缀> WHERE …`（**无 GROUP BY**，1 个逻辑行），末−首 |
+| `AGGREGATED` + `INTERVAL_SUM` | ✅ 两侧 1 分钟 `BOUND` 探测（各一次 `read_hdbtagvalue`，`interval=1`），末−首，缺边不出点 | `POST /v1/datapoints/calculated` **×2**：`calculationMode=17`（FirstRawValue）与 `19`（LastRawValue），`count=1`、`intervalMs=1`，末−首（`GeNativeApi.readIntervalSum`，`:460`） | `SELECT first_value(E(p)), last_value(E(p)), … FROM <前缀> WHERE …`（**无 GROUP BY**，1 个逻辑行），末−首 |
 | `SAMPLED` | `POST /hdb/read_hdbtagvalue`，用 `NeedQueryBound=true` 取桶边界值（`HlsHistoryAdapter.java:64`） | `POST /v1/datapoints/sampled`，`samplingMode=2`、`queryModifier=1`（`GeHistoryAdapter.java:79-81`） | 多列 `GROUP BY` + `LAST_VALUE`，等价于按间隔取每桶末值 |
 | `INTERPOLATED` | ❌ 抛 | `POST /v1/datapoints/interpolated`（`GET_INTERPOLATED_BY_REQUEST_PARAM_POST`），`count` + `intervalMs` | **SDK 内存网格**：窗内多列 raw + 左右包围点多列 raw + 补采，再线性内插；不用服务端 `FILL(LINEAR)` |
 | `TREND` | ❌ 抛 | ❌ 抛（公共层未声明） | ❌ 抛 |
 
-- **模式白名单出处**：`HlsHistoryAdapter.java:60`（仅 AGGREGATED/SAMPLED）、`GeHistoryAdapter.java:72-88`（RAW/AGGREGATED/SAMPLED/INTERPOLATED，其余抛）、`IotdbHistoryAdapter.java:103-104`。
+- **模式白名单出处**：`HlsHistoryAdapter.java:80-83`（AGGREGATED/SAMPLED/RAW，`RAW` 走 `rawSeries` 近似路径，`:86`）、`GeHistoryAdapter.java:72-88`（RAW/AGGREGATED/SAMPLED/INTERPOLATED，其余抛）、`IotdbHistoryAdapter.java:103-104`。
 - **IoTDB 的一处例外**：`queryService == null` 时，**任何 mode 都改走 REST 兜底**取数并组装（`IotdbHistoryAdapter.java:130-134`），不会在模式守卫处抛异常；但此时 `capabilities()` **不声明** `SAMPLED_HISTORY`/`INTERPOLATED_HISTORY`/`CUMULATIVE_DELTA`。所以「能力集说不支持」与「调用一定抛异常」在 IoTDB 上不是同一件事——按能力集判断，别靠试。`require-query-service: true`（默认）会让这种残缺装配在构造期就失败。
 - **不支持时**：不在白名单内的 `mode` 一律抛 `TsdbUnsupportedException`，**不会退回 RAW 或返回空**。
 - **示例**：
@@ -265,7 +265,7 @@ List<TagSeries> raw = client.history().read(HistoryQuery.builder()
         .range(start, end)
         .mode(QueryMode.RAW)
         .maxPoints(5000)
-        .build());                                        // HLS 上抛 TsdbUnsupportedException
+        .build());                                        // HLS 上走 1 秒 BOUND 桶近似（带 rawSource 标注），GE/IoTDB 为原生 raw
 ```
 
 #### `HistoryQuery.Builder` 全字段
@@ -278,10 +278,10 @@ List<TagSeries> raw = client.history().read(HistoryQuery.builder()
 | `mode(QueryMode)` | 枚举 | ✅ | 5 值，见上表 |
 | `aggregation(Aggregation)` | 枚举 | AGGREGATED/SAMPLED 必填 | 10 值，白名单见 §3.8 |
 | `interval(Duration)` | 间隔 | 分桶模式必填 | IoTDB 任意 `Duration` 可下推；HLS 必须 ≥1 秒 |
-| `count(Integer)` | 点数 | 可选 | GE 的 `count` 直接下推；其它驱动作上限参考 |
+| `count(Integer)` | 点数 | 可选 | 设置了 `interval` 时可省略：GE 用 `HistorianUnit.resolveCount` 精确推导服务端点数，显式填写且不一致会抛 `IllegalArgumentException`；HLS / IoTDB 按 `interval` 下发、不校验。`RAW` 的点数上限与无 `interval` 的纯 count 网格必须显式 |
 | `maxPoints(int)` | 上限 | 可选 | 默认 `DEFAULT_MAX_POINTS = 10000` |
-| `direction(Direction)` | 方向 | 可选 | HLS **仅 FORWARD**（`HlsHistoryAdapter.java:71`） |
-| `fill(FillPolicy)` | 填充 | 可选 | HLS **仅 NONE**（`HlsHistoryAdapter.java:74`）；GE **仅 NONE**（`GeHistoryAdapter.java:59-61`）；IoTDB 只有「SAMPLED 且装配了 queryService」这一条路径能下推 FILL，其余路径非 NONE 一律抛（`IotdbHistoryAdapter.java:90-92`），且 `ZERO` 未实现 |
+| `direction(Direction)` | 方向 | 可选 | HLS **仅 FORWARD**（`HlsHistoryAdapter.java:103`；`RAW` 在 `:155`） |
+| `fill(FillPolicy)` | 填充 | 可选 | HLS **仅 NONE**（`HlsHistoryAdapter.java:107`；`RAW` 在 `:161`）；GE **仅 NONE**（`GeHistoryAdapter.java:59-61`）；IoTDB 只有「SAMPLED 且装配了 queryService」这一条路径能下推 FILL，其余路径非 NONE 一律抛（`IotdbHistoryAdapter.java:90-92`），且 `ZERO` 未实现 |
 | `partialResultAllowed(boolean)` | 容错 | 可选 | `true` 才把 per-tag 失败落进 attributes |
 | `includeQuality(boolean)` | 质量码 | 可选 | 是否要求携带质量码 |
 
@@ -302,9 +302,9 @@ List<DeltaSeries> read(Collection<String> tags, Instant start, Instant end,
 
 | 驱动 | 端点 / SQL | 基线怎么取 |
 |---|---|---|
-| HLS | `POST /hdb/read_hdbtagvalue`，`NeedQueryBound=true` 分桶 | 用 `BOUND` 当桶边界值，相邻相减（`HlsDeltaAdapter`）。**`TagValue_Bound` 是否等于区间末值尚未在现场确认** |
-| GE | `POST /v1/datapoints/calculated`（`calculationMode=19` 取每桶末值）+ `POST /v1/datapoints/raw` | 基线是**一次批量 POST raw**（Backward、`count=1`）取全部位号起点前末值，不是逐位号 N+1；回看窗口 `start.minusSeconds(366L*24*3600)`（`GeDeltaAdapter.java:149`） |
-| IoTDB | 桶序列 1 条多列 `GROUP BY` + `SELECT LAST_VALUE(E(p)), … WHERE time < start` 1 条 | 每块 **2 条 SQL**（`IotdbQueryService.deltasBatch`） |
+| HLS | `POST /hdb/read_hdbtagvalue`，`NeedQueryBound=true` 分桶 | 主查询扩到 `[start - 桶长, end)`，第 0 个桶即基线，**1 次请求**；样本数对不上时才补 1 条批量 `BOUND` 兜底（`HlsDeltaAdapter`）。`BOUND` 是生产同款迂回方案（HLS 无 `LAST`/原生原始点），适用前提与升级复核见 docs/10 §8.1 |
+| GE | `POST /v1/datapoints/calculated`（`calculationMode=19` 取每桶末值） | 主查询起点前移一个间隔、服务端 `count = 窗口桶数 + 1`，第 0 个样本即基线，**1 次请求**；首值为空才补 1 条批量 raw（Backward、`count=1`、回看 366 天）兜底（`GeDeltaAdapter`） |
+| IoTDB | 每块 1 条多列 `GROUP BY`，范围 `[start - 间隔, end)` | 第 0 个桶就是基线，**每块 1 条 SQL**；首桶未命中才为缺桶位号补 1 条批量 `LAST_VALUE … WHERE time < start`（`IotdbDeltaQueries`）。月粒度扩展起点用业务时区 `minusMonths(1)`，与 `1mo` 对齐 |
 
 - **逐驱动白名单**：
 
@@ -325,9 +325,79 @@ List<DeltaSeries> daily = client.deltaHistory().read(
         Direction.FORWARD, 1000);
 ```
 
-> ⚠️ **HLS 的差分不得用于生产结算**，直到现场确认 `TagValue_Bound` 等于区间末值。
-> 门控 IT 里对应用例默认跳过，需显式 `-Dhls.it.delta=true` 才跑。
+> HLS 的差分包基于 `TagValue_Bound`（厂商桶边界列）：这是生产同款迂回方案，不是协议级桶末值，
+> 适用前提与换版本复核见 docs/10 §8.1。
+> 门控 IT 里对应用例默认跳过（历史查询在代理侧成本高），需显式 `-Dhls.it.delta=true` 才跑。
 > `INTERVAL_SUM`（整窗末−首，单值）与 `CUMULATIVE_DELTA`（逐桶差分，序列）**语义不同，不可互相顶替**。
+
+#### `readByInterval(...)`（8 参，任意毫秒间隔）
+
+```java
+List<DeltaSeries> readByInterval(Collection<String> tags, Instant start, Instant end,
+                                 long intervalMillis, Aggregation aggregation, FillPolicy fill,
+                                 Direction direction, int maxPoints)
+```
+
+- **语义**：与 `read(...)` 相同的逐桶末值相减、首桶基线、`reset`/`missing` 规则；区别只有两点：
+  间隔是毫秒数，且分桶网格**锚定在 `start`**（不按自然边界归整）。
+- **驱动支持**：HLS 仅接受 `intervalMillis >= 1000` 且能被 1000 整除；GE/IoTDB 接受任意正整数毫秒
+  （IoTDB 走 `IotdbSql.intervalLiteral`，`5m`/`250ms` 已被生产只读验证）。
+- **不支持月**：`TimeUnit` 没有月；月差分继续用 `read(..., TimeGranularity.MONTH, ...)`。
+- **默认实现**：未覆写 `readByInterval` 的第三方驱动，运行期抛 `TsdbUnsupportedException`。
+- **与参考 GE SDK 的差异**：参考实现 `getHistorianIntervalValueBySampled` 使用边界插值、实时值补齐、
+  BAD 当 0、保留两位小数；本 SDK **一条都不做**。
+
+#### `intervalDeltas(...)`（两个便利重载）
+
+```java
+List<DeltaSeries> intervalDeltas(Collection<String> tags, HistorianUnit unit,
+                                 FillPolicy fill, Direction direction, int maxPoints);
+List<DeltaSeries> intervalDeltas(Collection<String> tags, Instant metaTime,
+                                 int total, TimeUnit totalUnit, int interval, TimeUnit intervalUnit,
+                                 FillPolicy fill, Direction direction, int maxPoints);
+```
+
+底层调用 `readByInterval(tags, unit.getBegin(), unit.getCoveredEnd(), unit.getIntervalMs(),
+Aggregation.LAST, ...)`：输出点数 = `unit.getCount()`，时间戳取驱动返回的桶样本时间（不做起终点偏移；
+IoTDB `GROUP BY` 返回桶起点，HLS/GE 桶时间起终点未统一确认），末尾不足一个间隔的
+`tailMs` 不产出点。
+
+#### `HistorianUnit`（`common.model`）
+
+| 成员 | 含义 |
+|---|---|
+| `begin` / `end` | 窗口起点（含）/ 终点（不含） |
+| `intervalMs` | 单段间隔毫秒数 |
+| `count` | `floor((end-begin)/intervalMs)` 个完整间隔 |
+| `coveredEnd()` | `begin + count*intervalMs`，实际可出数的右边界 |
+| `tailMs()` | 末尾不足一个间隔的毫秒数 |
+
+`HistorianUnit.calculate(metaTime, total, totalUnit, interval, intervalUnit[, zone, round])` 计算窗口：
+`metaTime == null` 取当前时刻；段数用毫秒整除（不用参考实现会截断子秒的 `toSeconds`）；
+`round=true` 把结束时刻向下对齐到「业务时区当地 00:00 锚点 + 间隔步长」的网格，
+5 分钟、8 小时、1 天都得到自然边界，`round=true` 必须传 `zone`。
+
+#### 差分/整窗增量三库差异
+
+| 需求 | HLS | GE | IoTDB | 本轮 |
+|---|---|---|---|---|
+| 任意毫秒间隔差分列表 | 🟡 仅整秒（≥1s） | ✅ | ✅ | **新增** `readByInterval` / `intervalDeltas` |
+| `MONTH` 差分 | ❌ | ❌ | ✅ | 不变 |
+| 差分填充 | `NONE`/`PREVIOUS` | 仅 `NONE` | `NONE`/`PREVIOUS`/`LINEAR` | 不变 |
+| 差分基线 | 扩窗后第 0 个 `BOUND` 桶 | 扩窗后第 0 个 `calculated` 桶（`count+1`） | 扩窗后第 0 个 `GROUP BY` 桶 | **折叠进主查询**（缺桶批量兜底，最坏 2 次） |
+| 首桶无基线 | `missing=true` | `missing=true` | `missing=true` | 一致 |
+| `INTERVAL_SUM` | ✅ 两侧 1 分钟 `BOUND` 探测，缺边不出点 | ✅ `17`/`19` 双请求，BAD/空按 0（遗留） | ✅ `first_value`/`last_value` | **新增 HLS** |
+| `INTERVAL_SUM` 多片（`count`/`interval`>1） | ❌ | ❌ | ❌ | **未实现**（三库都只做整窗单值） |
+| 未闭合区间用实时值补齐 | ❌ | ❌ | ❌ | **不实现** |
+| BAD 质量码当 0 | ❌ 跳过 BAD | `INTERVAL_SUM` 遗留按 0 | 无质量码 | **不统一**，显式标注 |
+| 差值保留 N 位小数 | ❌ | ❌ | ❌ | **不实现**，调用方自行 `BigDecimal.setScale` |
+| 差分结果截断标记 | ❌ | ❌ | ❌ | **未实现**（`DeltaSeries` 无 `truncated`，`maxPoints` 静默截断） |
+| HLS `BOUND` 语义 | 已定案：生产同款迂回方案（定义与复核步骤见 docs/10 §8.1） | — | — | 2026-11-18 定案，不再是阻塞项 |
+
+HLS `INTERVAL_SUM` 的实现：起点窗 `[start, start+min(60s, span))`、终点窗
+`[end-min(60s, span), end)`，两次 `readHistory(..., 1L, BOUND, tags)`（每次 ≤60 个 1 秒桶），
+取起点窗第一个、终点窗最后一个可解析且质量非 `BAD` 的值，`BigDecimal` 末−首；任一侧缺值返回空序列。
+单点结果忽略 `direction`，填充仍只允许 `NONE`。
 
 ### 3.6 `WriteSession`
 
@@ -381,7 +451,7 @@ List<DeltaSeries> daily = client.deltaHistory().read(
 | `TAG_SEARCH` | ❌ | ❌ | ❌ |
 | `TAG_CRUD` | ❌ | ❌ | ❌ |
 | `CURRENT_VALUE` | ✅ | ✅ | ✅ |
-| `RAW_HISTORY` | ❌ | ✅ | ✅ |
+| `RAW_HISTORY` | ✅ 1 秒 `BOUND` 桶近似 | ✅ | ✅ |
 | `AGGREGATED_HISTORY` | ✅ | ✅ | ✅ |
 | `INTERPOLATED_HISTORY` | ❌ | ✅ | 🟡 条件 |
 | `SAMPLED_HISTORY` | ✅ | ✅ | 🟡 条件 |
@@ -393,7 +463,7 @@ List<DeltaSeries> daily = client.deltaHistory().read(
 | `SUBSCRIPTION` | ❌ | ❌ | ❌ |
 | `SYSTEM_ADMIN` | ❌ | ❌（原生有 25 系统 + 27 采集器端点） | ❌ |
 
-出处：`HlsClient.java:56-60`（5 项）、`GeClient.java:61-67`（7 项）、`IotdbClient.java:165-177`。
+出处：`HlsClient.java:61-67`（6 项）、`GeClient.java:61-67`（7 项）、`IotdbClient.java:165-177`。
 
 IoTDB 的**条件声明**（`IotdbClient.java:165-177`）：
 
@@ -408,7 +478,7 @@ if (config.isWriteAllowed()) { caps.add(Capability.WRITE); }
 `require-query-service: true`（默认）时装配失败会在**构造期**抛 `TsdbConfigurationException`，不会留下一个能力残缺的客户端。
 
 > `HlsDriver.java:47-49` 只声明 3 项（TAG_BROWSE/CURRENT_VALUE/AGGREGATED_HISTORY），
-> 与 `HlsClient` 的 5 项不一致。**以 `HlsClient.capabilities()` 为准**（那是运行期实际返回值）；
+> 与 `HlsClient` 的 6 项不一致。**以 `HlsClient.capabilities()` 为准**（那是运行期实际返回值）；
 > 驱动级声明是发现阶段的粗粒度提示，本轮不改代码，只如实记录这处差异。
 
 **`QueryMode`（5 值）× 三库**：见 §3.4 的 mode 表。
@@ -426,7 +496,7 @@ if (config.isWriteAllowed()) { caps.add(Capability.WRITE); }
 | `LAST` | ❌ 抛 | ✅ `19`（LastRawValue） | ✅ `LAST_VALUE` |
 | `RANGE` | ❌ 抛 | ❌ 抛 | ❌ 抛 |
 | `BOUND` | ✅ `TagValue_Bound` | ❌ 抛 | ❌ 抛 |
-| `INTERVAL_SUM` | ❌ 抛 | ✅ 走 `17`/`19` **双请求** | ✅ 走 `first_value`+`last_value` **单窗单 SQL** |
+| `INTERVAL_SUM` | ✅ 两侧 1 分钟 `BOUND` 探测，缺边不出点 | ✅ 走 `17`/`19` **双请求** | ✅ 走 `first_value`+`last_value` **单窗单 SQL** |
 
 出处：`HlsHistoryAdapter.java:110-113`、`GeHistoryAdapter.java:175-200`、`IotdbSeriesAssembler.supported():260-274`、`IotdbSql.java:432-452`。
 
@@ -442,11 +512,12 @@ if (config.isWriteAllowed()) { caps.add(Capability.WRITE); }
 | `LINEAR` | ❌ 抛 | ❌ 抛 | ❌ 抛 | ❌ 抛 | 🟡 仅 SAMPLED 路径 |
 | `ZERO` | ❌ 抛 | ❌ 抛 | ❌ 抛 | ❌ 抛 | ❌ **未实现** |
 
-出处：HLS history `HlsHistoryAdapter.java:74`、HLS delta `HlsDeltaAdapter.java:78`、GE history `GeHistoryAdapter.java:59-61`、GE delta `GeDeltaAdapter.java:81`、IoTDB `IotdbHistoryAdapter.java:90-92`。
+出处：HLS history `HlsHistoryAdapter.java:91-92,107`（`RAW` 另在 `:161` 单独校验）、HLS delta `HlsDeltaAdapter.java:78`、GE history `GeHistoryAdapter.java:59-61`、GE delta `GeDeltaAdapter.java:81`、IoTDB `IotdbHistoryAdapter.java:90-92`。
 
 > IoTDB 的 🟡 含义：`FILL(...)` 只在 `mode == SAMPLED && queryService != null` 时才拼进 SQL；
 > RAW / AGGREGATED / INTERPOLATED 带非 NONE 填充**直接抛 `TsdbUnsupportedException`**，不是忽略。
 > INTERPOLATED 的「线性」是 SDK 内存网格自己算的，与服务端 `FILL(LINEAR)` 是两件事。
+> HLS 的 `RAW`（1 秒 `BOUND` 近似）同样只接受 `NONE`，传其它填充直接抛。
 
 **`TimeGranularity`（5 值）**：`SECOND`→`1s`、`MINUTE`→`1m`、`HOUR`→`1h`、`DAY`→`1d`、`MONTH`→`1mo`。
 `MONTH` 只有 IoTDB 支持；HLS/GE 的 delta 抛 `TsdbUnsupportedException`。
@@ -752,7 +823,7 @@ rest.insertTablet(requestNode);
 String pong = rest.ping();
 ```
 
-### 7.2 `IotdbQueryService`（22 个 public 成员 = 21 个方法/构造器 + 1 个 public 嵌套类）
+### 7.2 `IotdbQueryService`（24 个 public 成员 = 23 个方法/构造器 + 1 个 public 嵌套类）
 
 位置：`iotdb/internal/query/IotdbQueryService.java`。取出：`client.unwrap(IotdbQueryService.class)`。
 **三种 transport 共用同一份 SQL**——包括 `AGGREGATED`，它不再单独走 REST，否则「三通道同一份 SQL」这条不变式就有洞。
@@ -988,10 +1059,16 @@ rest_service_port=18080
 
 | 层 | 数字 | 最近实测 |
 |---|---|---|
-| L1 离线单测 | **258**（common 61 + hls 14 + ge 22 + iotdb 160 + starter 1），0 failures / 0 errors / 0 skipped | **2026-11-17 10:05**，`mvn -o test` BUILD SUCCESS（46.7 s），23 份当次生成的 surefire XML |
-| IoTDB 门控 IT | **45**（Production 11 + Mapping 3 + ContractProbe 24 + TierParity 7），45/45 全绿 | 2026-11-16 16:50 |
-| GE 门控 IT | **19**（Production 10 + Comparison 9），`MATCH=2021 DIFF=0 PROBE=483` | 2026-11-16 16:55 |
-| HLS 门控 IT | **8** 用例 → 7 绿 / 1 跳过 / 0 失败（跳过的是差分） | 2026-11-16 17:03，433 s |
+| L1 离线单测 | **290**（common 77 + hls 20 + ge 28 + iotdb 164 + starter 1），0 failures / 0 errors / 0 skipped | **2026-11-19 09:58**，`mvn -o test` BUILD SUCCESS，25 份当次生成的 surefire XML |
+| IoTDB 门控 IT | **45**（Production 11 + Mapping 3 + ContractProbe 24 + TierParity 7），45/45 全绿 | **2026-11-19 09:51**；七族 `diffs=0`，其中「等间隔差分 222」是折叠基线的主证据（`delta` 桶数 42）。注意 surefire 2.22.2 默认不匹配 `*IT`，必须带 `-Dtest=*IT`，否则只跑 164 个单测 |
+| GE 门控 IT | **19**（Production 10 + Comparison 9），`MATCH=2021 DIFF=0 OLD_ONLY=0 NEW_ONLY=0 PROBE=434` | **2026-11-19 09:50**，差分折叠与 `count` 推导改动后的全量回归（Comparison 175.5 s、Production 3.1 s） |
+| HLS 门控 IT | **10**（9 默认 + 1 差分门控），10/10 全绿 | **2026-11-19 09:42**，438 s（`-Dhls.it.delta=true`）；5 分钟差分 `points=12`（1 小时窗口 = 12 个桶，旧值 13 是 `limit + 1` 越界，已随折叠修正） |
+
+> 上表三行都是 **2026-11-19** 本轮实跑记录（差分基线折叠 + `count` 精确推导之后）：三库生产只读 IT 均已执行并通过，无跳过。
+> 差分往返统一为「主查询扩一个间隔折叠基线」，HLS 1 请求 / GE 1 请求 / IoTDB 每块 1 条 SQL，
+> 只有扩展桶为空时才各补一条**批量**兜底；输出点数等于调用方 `count`（或区间推导值），补 1 只在实现内部。
+> HLS 的 `RAW`/`SAMPLED`/`INTERVAL_SUM`/差分统一基于 `BOUND`（生产同款迂回方案），
+> 适用前提与换版本复核见 docs/10 §8.1。
 
 复现命令：
 
@@ -1003,7 +1080,7 @@ mvn -o -pl tsdb-sdk-ge -am test "-Dtest=GeProductionIT,GeComparisonIT" \
 
 mvn -o -pl tsdb-sdk-hls -am test "-Dtest=HlsProductionIT" \
   "-DfailIfNoTests=false" "-Dhls.it=true"
-# 仅在现场确认 HLS 的 TagValue_Bound 等于区间末值后，才追加 "-Dhls.it.delta=true"
+# 差分用例历史查询成本高、默认跳过；需要时追加 "-Dhls.it.delta=true"
 
 mvn -o -pl tsdb-sdk-iotdb -am test \
   "-Dtest=IotdbProductionIT,IotdbMappingProductionIT,IotdbContractProbeIT,IotdbTierParityIT" \
@@ -1015,15 +1092,19 @@ mvn -o -pl tsdb-sdk-iotdb -am test \
 - `-pl` 必须带 `-am`，否则依赖模块不会先构建。
 - 跨模块只跑 IT 用 **`-DfailIfNoTests=false`**；`-Dsurefire.failIfNoSpecifiedTests=false` 在本项目的 surefire 2.22.2 上**无效**。
 - 计数只认**当次生成**的 surefire XML（按 mtime/cutoff 过滤），不做目录求和——`target/` 里会累积历史报告。
-- `IotdbProductionIT` 默认位号 `root.factory.device01.temperature` 已无近 7 天数据（最后一点约 2026-11-07），其 raw 断言会**环境性失败**；用 `-Diotdb.it.tag=root.factory.device02.temperature` 指向存活位号即可三通道全绿。这不是 SDK 回归。
+- `IotdbProductionIT` 的默认位号会随现场数据老化而变化：默认库 `root.factory` 下
+  `device01.temperature` 近 7 天可能已无原始点，其 raw 断言会**环境性失败**；在 `iotdb-it.properties`
+  把 `tag` 指到存活位号（本轮用 `root.factory.device02.temperature`）即可三通道全绿。这不是 SDK 回归。
 - 生产凭据放被 `.gitignore` 排除的 `ge-it.properties` / `hls-it.properties` / `iotdb-it.properties`，不写入仓库。
+  IoTDB 四个 IT 类经 `IotdbItConfig` 读取，优先级为「系统属性 `iotdb.it.<key>` → 环境变量
+  `IOTDB_IT_<KEY>` → `iotdb-it.properties`」；必填键 `baseUrl`/`username`/`password`，
+  可选 `rpcPort`/`transport`/`defaultDatabase`/`tag`/`tags`。
 
 ### 9.3 未执行 / 未确认清单（与 README §9.4 同口径）
 
 | 项 | 状态 | 后果 |
 |---|---|---|
 | **GE ↔ IoTDB 业务级对数** | **未执行** | 同库三档双跑（`IotdbTierParityIT` 七族 `diffs=0`）只证明 IoTDB 自己跟自己一致，**不证明 GE 与 IoTDB 的业务数值一致**。这是迁移的硬门槛，未完成前不得宣称「可替换」 |
-| **HLS `TagValue_Bound` 是否等于区间末值** | **未确认** | HLS 的 `SAMPLED` 与 `CUMULATIVE_DELTA` 都建立在 BOUND 上；未确认前**差分不得用于生产结算** |
 | 重试重放 / 熔断 / 信号量隔离 / 降级缓存 | **未实现** | `retry.max-attempts`/`backoff-ms` 是配置项，不要据此宣称有完整弹性能力 |
 | Actuator `/actuator/health/tsdb` | **未实现** | starter 只注册 `TsdbManager` bean |
 | 力控 pSpace 驱动 | **未实现** | 没有空壳驱动；Java 包名/Maven 坐标/JDBC URL/REST 路径与鉴权细节尚未拿到 |

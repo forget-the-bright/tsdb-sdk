@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * L2 契约探针：把生产 2.0.11（{@code 192.168.3.199:18080}）实测到的线缆形态钉成
+ * L2 契约探针：把生产 2.0.11 现场库实测到的线缆形态钉成
  * 可复跑的断言。
  *
  * <p>docs/14 引用的每一条“实测结论”都以本类为准，而不是某次手工 curl 的记忆。
@@ -56,10 +56,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 @Tag("iotdb-it")
 @EnabledIfSystemProperty(named = "iotdb.it", matches = "true")
 class IotdbContractProbeIT {
-
-    private static final String BASE_URL = "http://192.168.3.199:18080";
-
-    private static final String RPC_PORT = "6667";
 
     private static final String DEVICE = "root.sdk_it.device01";
 
@@ -918,11 +914,11 @@ class IotdbContractProbeIT {
     private static TsdbInstanceConfig instance(String transport) {
         TsdbInstanceConfig instance = new TsdbInstanceConfig();
         instance.setType("iotdb");
-        instance.setBaseUrl(BASE_URL);
-        instance.getAuth().setUsername("root");
-        instance.getAuth().setPassword("root");
+        instance.setBaseUrl(IotdbItConfig.required("baseUrl"));
+        instance.getAuth().setUsername(IotdbItConfig.required("username"));
+        instance.getAuth().setPassword(IotdbItConfig.required("password"));
         instance.getOptions().put("transport", transport);
-        instance.getOptions().put("rpc-port", RPC_PORT);
+        instance.getOptions().put("rpc-port", IotdbItConfig.text("rpcPort", "6667"));
         return instance;
     }
 

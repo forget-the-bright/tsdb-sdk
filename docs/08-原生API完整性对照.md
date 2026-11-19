@@ -212,7 +212,7 @@ GET 变体保留为原生逃生口与生产对比基准。
    新方法（见第 1 节表）。
 3. **枚举对照**：原 SDK 的 6 个 `*ApiEnum` 与 `GeEndpoint` 逐项对照；
    OAuth 由 `GeTokenManager` 覆盖。
-4. **契约测试**：全仓 258 个离线单元测试保证映射语义（GE 线新增 GET→POST 线缆、per-tag
+4. **契约测试**：全仓 290 个离线单元测试保证映射语义（GE 线新增 GET→POST 线缆、per-tag
    `ErrorCode`/`attributes`、`SUM→9`、`INTERVAL_SUM` 的 17/19 双请求、`SAMPLED` 走 sampled
    端点、`HistoryQuery.count`/`includeQuality`、`GeDriver` 与 `GeClient` 能力集一致；IoTDB 线新增
    位号路径模型 `IotdbTagPath`（全名称／相对名称补默认库／已加反引号三态、非法引号形态拒绝）、

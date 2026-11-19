@@ -6,6 +6,7 @@ import io.github.forget_the_bright.tsdb.common.exception.TsdbUnsupportedExceptio
 import io.github.forget_the_bright.tsdb.common.model.Aggregation;
 import io.github.forget_the_bright.tsdb.common.model.FillPolicy;
 import io.github.forget_the_bright.tsdb.common.model.HistoryQuery;
+import io.github.forget_the_bright.tsdb.common.model.HistorianUnit;
 import io.github.forget_the_bright.tsdb.common.model.Quality;
 import io.github.forget_the_bright.tsdb.common.model.QueryMode;
 import io.github.forget_the_bright.tsdb.common.model.Sample;
@@ -68,6 +69,11 @@ public final class GeHistoryAdapter implements HistoryReader {
         Long intervalMillis = query.getInterval() == null ? null : query.getInterval().toMillis();
         int serverCount = count != null ? count : query.getMaxPoints();
         long serverInterval = intervalMillis != null ? intervalMillis : 1L;
+        if (intervalMillis != null && mode != QueryMode.RAW) {
+            // 区间已知时点数可从时间窗精确推导：调用方不必再填 count，
+            // 一旦填写就必须与推导值一致，否则这里直接抛错而不是静默采用。
+            serverCount = HistorianUnit.resolveCount(count, query.getStart(), query.getEnd(), intervalMillis);
+        }
         List<GeModels.Series> raw;
         if (mode == QueryMode.RAW) {
             raw = support.nativeApi().readRaw(query.getTags(), query.getStart(), query.getEnd(),
@@ -78,7 +84,8 @@ public final class GeHistoryAdapter implements HistoryReader {
                     calculationMode, serverCount, serverInterval);
         } else if (mode == QueryMode.SAMPLED) {
             raw = support.nativeApi().readSampled(query.getTags(), query.getStart(), query.getEnd(),
-                    2, 1L, intervalMillis, count, null, query.getDirection());
+                    2, 1L, intervalMillis, intervalMillis == null ? count : Integer.valueOf(serverCount),
+                    null, query.getDirection());
         } else if (mode == QueryMode.INTERPOLATED) {
             raw = support.nativeApi().readInterpolated(query.getTags(), query.getStart(), query.getEnd(),
                     serverCount, serverInterval);

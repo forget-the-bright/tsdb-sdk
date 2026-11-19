@@ -3,8 +3,11 @@
  *
  * <h2>协议特征</h2>
  * <p>HLS 的接口面很小：实时值（DDB）、区间聚合（HDB）、标签目录、令牌，共四类。
- * 它没有原始点、插值、采样、趋势和写入接口，因此公共层只声明
- * {@code TAG_BROWSE / CURRENT_VALUE / AGGREGATED_HISTORY} 三项能力。历史查询的
+ * 它没有原生原始点、插值、趋势和写入接口，因此公共层声明
+ * {@code TAG_BROWSE / CURRENT_VALUE / RAW_HISTORY / AGGREGATED_HISTORY /
+ * SAMPLED_HISTORY / CUMULATIVE_DELTA}。其中 {@code SAMPLED} 取历史值接口的
+ * {@code BOUND} 列，{@code RAW} 用 1 秒 {@code BOUND} 桶近似，累计量差分的
+ * 基线也来自同一列——这是现场生产同款迂回方案，不是协议级原始点。历史查询的
  * 返回值是“宽表”：一行同时带 AVG/MIN/MAX/Bound 多列，驱动按
  * {@code HistoryQuery.aggregation} 选择对应列，而不是固定取 AVG。</p>
  *

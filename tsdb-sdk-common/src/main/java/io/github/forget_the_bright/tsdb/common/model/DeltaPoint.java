@@ -25,7 +25,7 @@ public final class DeltaPoint {
     /**
      * 创建差分点。
      *
-     * @param timestamp     区间结束时刻，不能为 {@code null}
+     * @param timestamp     该差值所属桶的样本时间戳（驱动原样返回，不做起终点偏移），不能为 {@code null}
      * @param timestampDate Java 兼容时间视图，可为 {@code null}
      * @param timestampText 按实例时区格式化后的展示文本，可为 {@code null}
      * @param delta         差值；缺数据时为 {@code null}
@@ -43,7 +43,7 @@ public final class DeltaPoint {
     }
 
     /**
-     * 返回区间结束时刻。
+     * 返回该差值所属桶的样本时间戳（驱动原样返回，不做起终点偏移）。
      *
      * @return 绝对时刻，非 {@code null}
      */

@@ -16,6 +16,7 @@ import io.github.forget_the_bright.tsdb.common.model.FillPolicy;
 import io.github.forget_the_bright.tsdb.common.model.HealthStatus;
 import io.github.forget_the_bright.tsdb.common.model.HistoryQuery;
 import io.github.forget_the_bright.tsdb.common.model.QueryMode;
+import io.github.forget_the_bright.tsdb.common.model.Sample;
 import io.github.forget_the_bright.tsdb.common.model.TimeGranularity;
 import io.github.forget_the_bright.tsdb.common.model.TagInfo;
 import io.github.forget_the_bright.tsdb.common.model.TagQuery;
@@ -62,10 +63,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p><strong>只读约束：</strong>HLS 驱动本身只提供标签目录、当前值和区间聚合历史，
  * 本测试不会也无力调用写入接口。生产账号仍应只授予读权限。</p>
  *
- * <p><strong>HLS 与 GE 的差异：</strong>HLS 没有原始点、插值、趋势、写入、告警、
- * 采集器、系统管理等接口，因此这里不复制 GE 的 raw/interpolated/trend 用例；
- * 它覆盖的是 HLS 真正具备的 DDB 当前值、HDB 区间聚合（AVG/MIN/MAX/BOUND）
- * 以及厂商原生 JSON 接口。</p>
+ * <p><strong>HLS 与 GE 的差异：</strong>HLS 没有原生原始点、插值、趋势、写入、告警、
+ * 采集器、系统管理等接口。{@code RAW} 不是厂商接口，而是按现场生产同款方案用
+ * 历史值接口的 1 秒 {@code BOUND} 桶近似，本测试据此校验结果属性与样本完整性；
+ * 插值/趋势类用例仍然不做。整体覆盖 DDB 当前值、HDB 区间聚合（AVG/MIN/MAX/BOUND）、
+ * RAW 近似、整窗增量、累计量差分以及厂商原生 JSON 接口。</p>
  *
  * <p>凭据优先级：系统属性 {@code hls.it.*} → 环境变量 {@code HLS_IT_*} →
  * 当前目录或 {@code tsdb-sdk-hls/} 下的 {@code hls-it.properties}。示例见
@@ -116,7 +118,7 @@ class HlsProductionIT {
 
     @BeforeAll
     static void connect() throws IOException {
-        Assumptions.assumeTrue(true,
+        Assumptions.assumeTrue(enabled(),
                 "HLS production IT is disabled; pass -Dhls.it=true to enable it");
 
         Properties file = loadProperties();
@@ -214,7 +216,9 @@ class HlsProductionIT {
         assertTrue(client.capabilities().supports(Capability.TAG_BROWSE));
         assertTrue(client.capabilities().supports(Capability.CURRENT_VALUE));
         assertTrue(client.capabilities().supports(Capability.AGGREGATED_HISTORY));
-        assertFalse(client.capabilities().supports(Capability.RAW_HISTORY));
+        assertTrue(client.capabilities().supports(Capability.RAW_HISTORY));
+        assertTrue(client.capabilities().supports(Capability.SAMPLED_HISTORY));
+        assertTrue(client.capabilities().supports(Capability.CUMULATIVE_DELTA));
         assertFalse(client.capabilities().supports(Capability.INTERPOLATED_HISTORY));
         assertFalse(client.writeSession().isWritable());
         assertThrows(TsdbUnsupportedException.class,
@@ -307,7 +311,7 @@ class HlsProductionIT {
     void readsSampledHistoryAndCumulativeDelta() {
         Assumptions.assumeTrue(tag != null, "no HLS point available");
         Assumptions.assumeTrue(Boolean.parseBoolean(System.getProperty("hls.it.delta", "false")),
-                "HLS delta is experimental until TagValue_Bound semantics are confirmed; pass -Dhls.it.delta=true");
+                "HLS delta issues several history requests; pass -Dhls.it.delta=true to include it");
         Instant historyEnd = anchor.minusSeconds(1);
         List<TagSeries> sampled = client.history().read(HistoryQuery.builder()
                 .tags(tag)
@@ -325,6 +329,68 @@ class HlsProductionIT {
         assertEquals(1, deltas.size());
         assertEquals(tag, deltas.get(0).getTagName());
         assertFalse(deltas.get(0).getPoints().isEmpty(), "cumulative delta returned no points");
+
+        List<DeltaSeries> fiveMinute = client.deltaHistory().readByInterval(
+                Collections.singletonList(tag),
+                historyEnd.minus(Duration.ofHours(1)), historyEnd,
+                300_000L, Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 64);
+        assertEquals(1, fiveMinute.size());
+        assertFalse(fiveMinute.get(0).getPoints().isEmpty(),
+                "arbitrary-interval cumulative delta returned no points");
+        System.out.println("HLS 5m delta " + tag + ": points=" + fiveMinute.get(0).getPoints().size());
+    }
+
+    @Test
+    void readsRawHistoryThroughOneSecondBoundBuckets() {
+        Assumptions.assumeTrue(tag != null, "no HLS point available");
+        Instant historyEnd = anchor.minusSeconds(1);
+        List<TagSeries> series = client.history().read(HistoryQuery.builder()
+                .tags(tag)
+                .range(historyEnd.minus(Duration.ofMinutes(10)), historyEnd)
+                .mode(QueryMode.RAW)
+                .maxPoints(300)
+                .build());
+        assertEquals(1, series.size());
+        TagSeries raw = series.get(0);
+        assertFalse(raw.getSamples().isEmpty(), "RAW history returned no samples for " + tag);
+        assertEquals("hls_history_1s_bound", raw.getAttributes().get("rawSource"),
+                "RAW history must declare its BOUND-bucket source");
+        assertEquals("true", raw.getAttributes().get("rawApproximate"),
+                "RAW history must be marked as approximate");
+        for (Sample sample : raw.getSamples()) {
+            assertNotNull(sample.getTimestamp(), "RAW sample timestamp missing for " + tag);
+            assertNotNull(sample.getTimestampText(), "RAW sample timestampText missing for " + tag);
+            assertTrue(sample.getDoubleValue() != null || sample.getTextValue() != null,
+                    "RAW sample has neither numeric nor text value for " + tag);
+        }
+        System.out.println("HLS RAW history " + tag + ": samples=" + raw.getSamples().size()
+                + ", first=" + raw.getSamples().get(0).getTimestampText()
+                + ", last=" + raw.getSamples().get(raw.getSamples().size() - 1).getTimestampText());
+    }
+
+    @Test
+    void readsIntervalSumFromBoundedEdges() {
+        Assumptions.assumeTrue(tag != null, "no HLS point available");
+        Instant historyEnd = anchor.minusSeconds(1);
+        Instant historyStart = historyEnd.minus(Duration.ofHours(historyHours));
+        List<TagSeries> series = client.history().read(HistoryQuery.builder()
+                .tags(tag)
+                .range(historyStart, historyEnd)
+                .mode(QueryMode.AGGREGATED)
+                .aggregation(Aggregation.INTERVAL_SUM)
+                .build());
+        assertEquals(1, series.size());
+        if (series.get(0).getSamples().isEmpty()) {
+            Assumptions.assumeTrue(false,
+                    "no bounded edge value in the first/last minute of the window for " + tag);
+        }
+        assertEquals(1, series.get(0).getSamples().size());
+        assertEquals(historyStart.truncatedTo(java.time.temporal.ChronoUnit.SECONDS),
+                series.get(0).getSamples().get(0).getTimestamp());
+        Double value = series.get(0).getSamples().get(0).getDoubleValue();
+        assertNotNull(value, "interval sum value must be numeric for " + tag);
+        assertTrue(Double.isFinite(value), "interval sum value must be finite for " + tag);
+        System.out.println("HLS INTERVAL_SUM " + tag + ": last " + historyHours + "h sum=" + value);
     }
 
     @Test

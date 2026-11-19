@@ -30,8 +30,8 @@ src/main/java/io/github/forget_the_bright/tsdb/hls
 │       ├── HlsSupport.java      共享配置/客户端/令牌/ensureOpen/unsupported 异常
 │       ├── HlsTagCatalogAdapter.java     标签目录与单标签查询
 │       ├── HlsCurrentValueAdapter.java   最新值（/ddb/read_ddbtagvalue）
-│       ├── HlsHistoryAdapter.java        历史库查询与各历史模式
-│       ├── HlsDeltaAdapter.java          累计量差分（BOUND 近似桶末值，语义待现场确认）
+│       ├── HlsHistoryAdapter.java        历史库查询与各历史模式（RAW 用 1 秒 BOUND 桶近似）
+│       ├── HlsDeltaAdapter.java          累计量差分（BOUND 桶边界值，生产同款迂回方案）
 │       └── HlsWriteAdapter.java          只读占位：isWritable()=false，write 抛不支持
 └── nativeapi
     └── dto
@@ -40,7 +40,7 @@ src/main/java/io/github/forget_the_bright/tsdb/hls
         └── HistorianRequest.java   buildRequest 修正原 SDK MAX/MIN 写反的缺陷
 ```
 
-测试：`hls/HlsClientTest`（14 例）；门控只读 IT 在 `hls/it/HlsProductionIT`
+测试：`hls/HlsClientTest`（18 例）；门控只读 IT 在 `hls/it/HlsProductionIT`
 （`-Dhls.it=true` 才跑，差分另需 `-Dhls.it.delta=true`）。
 
 ### 2.1 按任务找类
@@ -53,7 +53,7 @@ src/main/java/io/github/forget_the_bright/tsdb/hls
 | HTTP 细节、状态码→异常、代理 502 | `internal/HlsHttpClient` + `common/internal/http/HttpTransport`、`HttpErrors`（502 不重试不掩盖） |
 | 宽表拆长表、质量码与时间映射 | `internal/HlsModels` + 根包 `HlsMapper` |
 | 最新值/历史/差分的接口装配 | `internal/adapter/Hls*Adapter` |
-| 差分 BOUND 口径（**未裁决**） | `internal/adapter/HlsDeltaAdapter`，见 `docs/10`；现场确认前不要当定论 |
+| `RAW` 替代路径、差分/`INTERVAL_SUM` 的 BOUND 口径 | `internal/adapter/HlsHistoryAdapter`、`HlsDeltaAdapter`；原因与复核步骤见 `docs/10` §8.1 |
 | 只读驱动的可写性探测 | `internal/adapter/HlsWriteAdapter`（恒抛 `TsdbUnsupportedException`） |
 | 不支持能力的异常与开闭状态 | `internal/adapter/HlsSupport.unsupported` / `ensureOpen` |
 | 字段大小写不敏感取值、文本工具 | `common/internal/json/JsonText.textIgnoreCase` + `common/internal/Texts` |
@@ -99,13 +99,16 @@ instances:
 
 - `TAG_BROWSE`（仅 `listTags` / `getTag`，不支持 nameMask、valueType、unit 过滤）
 - `CURRENT_VALUE`
+- `RAW_HISTORY`（用历史值接口 `interval=1` + `NeedQueryBound=true` 取每个 1 秒桶的
+  `TagValue_Bound` 近似原始点；属性 `rawSource=hls_history_1s_bound`、`rawApproximate=true`；
+  仅 FORWARD、FillPolicy.NONE）
 - `AGGREGATED_HISTORY`（仅 AVG/MIN/MAX/BOUND，FORWARD，FillPolicy.NONE，间隔 ≥1 秒）
 - `SAMPLED_HISTORY`（用 BOUND 充当桶边界值，间隔决定分桶）
-- `CUMULATIVE_DELTA`（按 BOUND 分桶值相邻相减；BOUND 是否等于区间末值待现场确认）
+- `CUMULATIVE_DELTA`（按 BOUND 分桶值相邻相减）
 
-HLS 没有原始点、插值、趋势、写入、标签删除能力，调用这些能力会抛
-`TsdbUnsupportedException`。在未确认 `TagValue_Bound` 语义前，不要把
-`CUMULATIVE_DELTA` 用于生产结算。
+HLS 没有原生原始点、插值、趋势、写入、标签删除能力：`RAW` 是 1 秒 `BOUND` 桶近似，
+其余不支持的能力调用时抛 `TsdbUnsupportedException`。`RAW`/`SAMPLED`/差分/`INTERVAL_SUM`
+统一基于 `BOUND`，这是生产同款迂回方案；原因、适用前提与换版本复核见 `docs/10` §8.1。
 
 ### 质量码
 
@@ -144,11 +147,20 @@ mvn -pl tsdb-sdk-hls -am test
 ### 7.1 生产环境只读集成测试
 
 `HlsProductionIT` 对真实 HLS 环境执行只读用例：健康检查、标签目录、
-16 个现场点位的当前值、24 小时 AVG、四类聚合列、原生接口、原生逃生口。
-2026-11-10 已通过反向代理 `http://10.10.7.155:9000` 实际执行 **7/7 通过**，
-16 个点位全部有值，AVG/MIN/MAX/BOUND 各 25 点。另有一个
-`readsSampledHistoryAndCumulativeDelta` 用例，因代理侧历史查询超时尚未跑通，
-且 HLS 只能用 BOUND 近似桶末值，结论待现场确认。默认跳过，必须显式开启：
+16 个现场点位的当前值、24 小时 AVG、四类聚合列、`RAW` 秒级近似、
+`INTERVAL_SUM` 边缘探测、原生接口、原生逃生口。
+2026-11-10 首批用例经反向代理 `http://10.10.7.155:9000` 实际执行 **7/7 通过**，
+16 个点位全部有值，AVG/MIN/MAX/BOUND 各 25 点。
+**2026-11-18 17:20–17:27 全量复跑 10/10 通过、0 skipped**（412 s，显式打开 `-Dhls.it.delta=true`）：
+`RAW` 走 1 秒 `BOUND` 桶拿到 300 个样本（17:10:50–17:15:49），5 分钟差分 `points=13`，
+`INTERVAL_SUM` 落单点、BOUND 探针 589.0/590.1/583.3/595.6，16 个点位质量码全 `GOOD`。
+
+**2026-11-19 09:35–09:42 差分基线折叠轮复跑 10/10 通过**（438 s，`-Dhls.it.delta=true`）：
+差分改为一次 `readHistory(start - 桶长, end, …)`，第 0 个桶只作基线不输出，稠密时
+**1 次请求**完成；1 小时 / 5 分钟窗口输出 `points=12`（旧记录的 13 是 `limit + 1` 越界，已修正）。
+只有样本数对不上或首值为空时才补 1 次批量 `BOUND` 兜底。
+`readsSampledHistoryAndCumulativeDelta` 因历史查询在代理侧成本高，默认跳过，
+需显式 `-Dhls.it.delta=true`：
 
 ```powershell
 mvn -q -pl tsdb-sdk-hls -am test `

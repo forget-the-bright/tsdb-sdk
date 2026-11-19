@@ -53,11 +53,11 @@ class IotdbQueryServiceTest {
     void computesDeltaAgainstBaselineAndMarksCounterReset() {
         ScriptedExecutor executor = new ScriptedExecutor();
         executor.intervalRows = rows(
+                row(-3600000L, 90.0),
                 row(1000L, 100.0),
                 row(2000L, 150.0),
                 row(3000L, 40.0),
                 row(4000L, 80.0));
-        executor.baselineRows = rows(row(0L, 90.0));
         IotdbQueryService service = new IotdbQueryService(config(), executor);
 
         List<DeltaPoint> points = service.deltas("root.factory.device02.temperature",
@@ -70,19 +70,21 @@ class IotdbQueryServiceTest {
         assertTrue(points.get(2).isReset());
         assertEquals(40.0, points.get(2).getDelta(), 0.0001);
         assertEquals(40.0, points.get(3).getDelta(), 0.0001);
+        // 基线折进扩展桶：一次往返即可，不再补 LAST_VALUE
+        assertEquals(1, executor.sqls.size());
         assertTrue(executor.sqls.get(0).contains("GROUP BY"));
         assertTrue(executor.sqls.get(0).contains("FILL(PREVIOUS)"));
-        assertTrue(executor.sqls.get(1).contains("LAST_VALUE"));
+        assertTrue(executor.sqls.get(0).contains("[-3600000,10000)"));
     }
 
     @Test
     void marksEmptyBucketAsMissingAndKeepsPreviousValue() {
         ScriptedExecutor executor = new ScriptedExecutor();
         executor.intervalRows = rows(
+                row(-3600000L, 5.0),
                 row(1000L, 10.0),
                 row(2000L, null),
                 row(3000L, 30.0));
-        executor.baselineRows = rows(row(0L, 5.0));
         IotdbQueryService service = new IotdbQueryService(config(), executor);
 
         List<DeltaPoint> points = service.deltas("root.factory.device02.temperature",
@@ -93,6 +95,7 @@ class IotdbQueryServiceTest {
         assertFalse(points.get(0).isMissing());
         assertTrue(points.get(1).isMissing());
         assertEquals(20.0, points.get(2).getDelta(), 0.0001);
+        assertEquals(1, executor.sqls.size());
     }
 
     @Test
@@ -552,11 +555,12 @@ class IotdbQueryServiceTest {
     }
 
     @Test
-    void deltasBatchSendsTwoStatementsPerChunk() {
+    void deltasBatchSendsOneStatementPerChunkWhenExtendedBucketCarriesBaseline() {
         RecordingExecutor executor = new RecordingExecutor(sql -> sql.contains("GROUP BY")
                 ? new IotdbResultTable(Arrays.asList("LAST_VALUE(root.factory.d1.a)",
                         "LAST_VALUE(root.factory.d2.b)"),
-                rows(row(1000L, 110.0, 205.0), row(2000L, 150.0, 205.0)))
+                rows(row(-3600000L, 100.0, 200.0),
+                        row(1000L, 110.0, 205.0), row(2000L, 150.0, 205.0)))
                 : new IotdbResultTable(Arrays.asList("last_value(root.factory.d1.a)",
                         "last_value(root.factory.d2.b)"), rows(row(0L, 100.0, 200.0))));
         IotdbQueryService service = new IotdbQueryService(
@@ -567,14 +571,108 @@ class IotdbQueryServiceTest {
                 Instant.ofEpochSecond(0), Instant.ofEpochSecond(10),
                 TimeGranularity.HOUR, FillPolicy.NONE, Direction.FORWARD, 10);
 
-        // 每块恰好两条：桶序列 + 起点之前的基线
-        assertEquals(2, executor.sqls.size());
+        // 基线折进扩展桶后每块只有一条 SQL，且起点 = 窗口起点 - 1 个间隔
+        assertEquals(1, executor.sqls.size());
         assertTrue(executor.sqls.get(0).contains("GROUP BY"));
-        assertTrue(executor.sqls.get(1).contains("WHERE time < 0"));
+        assertTrue(executor.sqls.get(0).contains("[-3600000,10000)"));
         assertEquals(10.0, deltas.get("root.factory.d1.a").get(0).getDelta(), 0.0001);
         assertEquals(40.0, deltas.get("root.factory.d1.a").get(1).getDelta(), 0.0001);
         // b 第二个桶与第一个桶等值：增量为 0，不是缺数
         assertEquals(0.0, deltas.get("root.factory.d2.b").get(1).getDelta(), 0.0001);
+    }
+
+    @Test
+    void deltasBatchFallsBackToABatchedBaselineForTheTagWhoseExtendedBucketIsEmpty() {
+        RecordingExecutor executor = new RecordingExecutor(sql -> sql.contains("GROUP BY")
+                ? new IotdbResultTable(Arrays.asList("LAST_VALUE(root.factory.d1.a)",
+                        "LAST_VALUE(root.factory.d2.b)"),
+                rows(row(-3600000L, null, 200.0),
+                        row(1000L, 110.0, 205.0), row(2000L, 150.0, 205.0)))
+                : new IotdbResultTable(Collections.singletonList("LAST_VALUE(root.factory.d1.a)"),
+                rows(row(0L, 90.0))));
+        IotdbQueryService service = new IotdbQueryService(
+                configWith("query-batch-scope", "database"), executor);
+
+        Map<String, List<DeltaPoint>> deltas = service.deltasBatch(
+                paths("root.factory.d1.a", "root.factory.d2.b"),
+                Instant.ofEpochSecond(0), Instant.ofEpochSecond(10),
+                TimeGranularity.HOUR, FillPolicy.NONE, Direction.FORWARD, 10);
+
+        // 扩展桶存在但值为空：丢弃该点后只给缺基线的那一块补一条批量 LAST_VALUE
+        assertEquals(2, executor.sqls.size());
+        assertTrue(executor.sqls.get(1).contains("WHERE time < 0"));
+        assertTrue(executor.sqls.get(1).contains("LAST_VALUE(`d1`.`a`)"));
+        assertFalse(executor.sqls.get(1).contains("`b`"));
+        assertEquals(20.0, deltas.get("root.factory.d1.a").get(0).getDelta(), 0.0001);
+        assertEquals(40.0, deltas.get("root.factory.d1.a").get(1).getDelta(), 0.0001);
+        assertEquals(5.0, deltas.get("root.factory.d2.b").get(0).getDelta(), 0.0001);
+    }
+
+    @Test
+    void monthDeltasFoldThePreviousCalendarMonthIntoTheBucketQuery() {
+        RecordingExecutor executor = new RecordingExecutor(sql -> sql.contains("GROUP BY")
+                ? new IotdbResultTable(Collections.singletonList(
+                        "LAST_VALUE(root.factory.device02.temperature)"),
+                rows(row(1790784000000L, 90.0), row(1793462400000L, 100.0)))
+                : new IotdbResultTable(Collections.singletonList(
+                        "last_value(root.factory.device02.temperature)"), rows(row(0L, 90.0))));
+        IotdbQueryService service = new IotdbQueryService(config(), executor);
+
+        List<DeltaPoint> points = service.deltas(TEMPERATURE,
+                Instant.parse("2026-11-12T09:00:00Z"), Instant.parse("2026-12-01T00:00:00Z"),
+                TimeGranularity.MONTH, FillPolicy.NONE, Direction.FORWARD, 10);
+
+        // 归一后起点 = 2026-11-01T00:00+08:00（1793462400000），
+        // 扩展起点 = 上一个自然月 1 号（1790784000000），仍用 1mo 分组。
+        assertEquals(1, executor.sqls.size());
+        String sql = executor.sqls.get(0);
+        assertTrue(sql.contains("1mo"));
+        // SQL 里只有区间两端：扩展起点与终点
+        assertTrue(sql.contains("[1790784000000,"
+                + Instant.parse("2026-12-01T00:00:00Z").toEpochMilli() + ")"));
+        assertEquals(1, points.size());
+        assertEquals(10.0, points.get(0).getDelta(), 0.0001);
+    }
+
+    @Test
+    void deltasByIntervalSendsFiveMinuteLiteralAndFoldsBaseline() {
+        RecordingExecutor executor = new RecordingExecutor(sql -> sql.contains("GROUP BY")
+                ? new IotdbResultTable(Arrays.asList("LAST_VALUE(root.factory.d1.a)"),
+                rows(row(-300000L, 100.0), row(0L, 110.0), row(300000L, 150.0)))
+                : new IotdbResultTable(Arrays.asList("last_value(root.factory.d1.a)"),
+                rows(row(-1L, 100.0))));
+        IotdbQueryService service = new IotdbQueryService(
+                configWith("query-batch-scope", "database"), executor);
+
+        Map<String, List<DeltaPoint>> deltas = service.deltasByIntervalBatch(
+                paths("root.factory.d1.a"),
+                Instant.ofEpochSecond(0), Instant.ofEpochSecond(900),
+                300000L, FillPolicy.NONE, Direction.FORWARD, 10);
+
+        assertEquals(1, executor.sqls.size());
+        assertTrue(executor.sqls.get(0).contains("5m"));
+        assertTrue(executor.sqls.get(0).contains("[-300000,900000)"));
+        assertEquals(10.0, deltas.get("root.factory.d1.a").get(0).getDelta(), 0.0001);
+        assertEquals(40.0, deltas.get("root.factory.d1.a").get(1).getDelta(), 0.0001);
+    }
+
+    @Test
+    void singleDeltasByIntervalUsesMillisLiteral() {
+        RecordingExecutor executor = new RecordingExecutor(sql -> sql.contains("GROUP BY")
+                ? new IotdbResultTable(Arrays.asList("LAST_VALUE(root.factory.device02.temperature)"),
+                rows(row(-300000L, 100.0), row(0L, 105.0)))
+                : new IotdbResultTable(Arrays.asList("last_value(root.factory.device02.temperature)"),
+                rows(row(-1L, 100.0))));
+        IotdbQueryService service = new IotdbQueryService(configWith("query-batch-scope", "device"), executor);
+
+        List<DeltaPoint> points = service.deltasByInterval(TEMPERATURE,
+                Instant.ofEpochSecond(0), Instant.ofEpochSecond(600),
+                300000L, FillPolicy.NONE, Direction.FORWARD, 10);
+
+        assertEquals(1, executor.sqls.size());
+        assertTrue(executor.sqls.get(0).contains("5m"));
+        assertEquals(1, points.size());
+        assertEquals(5.0, points.get(0).getDelta(), 0.0001);
     }
 
     @Test

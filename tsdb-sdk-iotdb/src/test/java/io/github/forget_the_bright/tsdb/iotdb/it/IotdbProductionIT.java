@@ -18,23 +18,16 @@ import io.github.forget_the_bright.tsdb.common.spi.DriverContext;
 import io.github.forget_the_bright.tsdb.iotdb.IotdbClient;
 import io.github.forget_the_bright.tsdb.iotdb.IotdbDriver;
 import io.github.forget_the_bright.tsdb.iotdb.internal.query.IotdbQueryService;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -47,7 +40,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>默认不执行，只有显式传入 {@code -Diotdb.it=true} 时才连接现场库。
  * 地址、账号、测试点位按“系统属性 → 环境变量 → iotdb-it.properties”的
- * 优先级读取，避免把现场凭据写进仓库。</p>
+ * 优先级读取，全部经 {@link IotdbItConfig} 解析：类内没有现场地址或账号的
+ * 硬编码兜底，避免把现场凭据写进仓库。</p>
  *
  * @author wanghao
  * @since 0.1.0
@@ -56,28 +50,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 @EnabledIfSystemProperty(named = "iotdb.it", matches = "true")
 class IotdbProductionIT {
 
-    private static Properties properties;
-
-    @BeforeAll
-    static void loadProperties() throws IOException {
-        properties = new Properties();
-        Path local = Paths.get("iotdb-it.properties");
-        if (!Files.exists(local)) {
-            local = Paths.get("tsdb-sdk-iotdb", "iotdb-it.properties");
-        }
-        if (Files.exists(local)) {
-            try (InputStream in = Files.newInputStream(local)) {
-                properties.load(in);
-            }
-        }
-    }
-
     @ParameterizedTest
     @ValueSource(strings = {"rest", "native", "jdbc"})
     void readsLastValueAndTagCatalog(String transport) {
         IotdbClient client = client(transport);
         try {
-            String tag = text("tag", "root.factory.device02.temperature");
+            String tag = IotdbItConfig.text("tag", "root.factory.device02.temperature");
             List<TagSample> samples = client.currentValues().read(Arrays.asList(tag));
             assertEquals(1, samples.size());
             assertNotNull(samples.get(0).getSample(), "current value must not be null");
@@ -98,9 +76,8 @@ class IotdbProductionIT {
     void readsBatchRawAndHourlyHistory(String transport) {
         IotdbClient client = client(transport);
         try {
-           // List<String> tagNames = Arrays.asList("root.factory.RL.FCS0107.`TI-1071815_PV`", "root.factory.RL.FCS0107.`TI-1071816_PV`");
-           // List<String> tagNames = Arrays.asList("RL.FCS0107.`TI-1071815_PV`", "RL.FCS0107.`TI-1071816_PV`");
-            List<String> tagNames = Arrays.asList("RL.FCS0107.TI-1071815_PV", "RL.FCS0107.TI-1071816_PV");
+            List<String> tagNames = IotdbItConfig.list("tags",
+                    "RL.FCS0107.TI-1071815_PV,RL.FCS0107.TI-1071816_PV");
 
             Instant end = Instant.now();
             Instant start = end.minus(Duration.ofDays(30));
@@ -131,7 +108,7 @@ class IotdbProductionIT {
     void readsRawAndHourlyHistory(String transport) {
         IotdbClient client = client(transport);
         try {
-            String tag = text("tag", "root.factory.device01.temperature");
+            String tag = IotdbItConfig.text("tag", "root.factory.device01.temperature");
             Instant end = Instant.now();
             Instant start = end.minus(Duration.ofDays(30));
 
@@ -160,7 +137,7 @@ class IotdbProductionIT {
     void calculatesHourlyCumulativeDelta(String transport) {
         IotdbClient client = client(transport);
         try {
-            String tag = text("tag", "root.factory.device02.temperature");
+            String tag = IotdbItConfig.text("tag", "root.factory.device02.temperature");
             Instant end = Instant.now();
             Instant start = end.minus(Duration.ofDays(7));
             List<DeltaSeries> series = client.deltaHistory().read(Arrays.asList(tag), start, end,
@@ -196,29 +173,17 @@ class IotdbProductionIT {
 
         TsdbInstanceConfig instance = new TsdbInstanceConfig();
         instance.setType("iotdb");
-        instance.setBaseUrl(text("baseUrl", "http://192.168.3.199:18080"));
-        instance.getAuth().setUsername(text("username", "root"));
-        instance.getAuth().setPassword(text("password", "root"));
+        instance.setBaseUrl(IotdbItConfig.required("baseUrl"));
+        instance.getAuth().setUsername(IotdbItConfig.required("username"));
+        instance.getAuth().setPassword(IotdbItConfig.required("password"));
         instance.getOptions().put("transport", transport);
-        instance.getOptions().put("rpc-port", text("rpcPort", "6667"));
-        instance.getOptions().put("default-database", "root.factory");
+        instance.getOptions().put("rpc-port", IotdbItConfig.text("rpcPort", "6667"));
+        instance.getOptions().put("default-database",
+                IotdbItConfig.text("defaultDatabase", "root.factory"));
 
         TsdbConfig root = new TsdbConfig();
         root.setSecurity(security);
         DriverContext context = new DriverContext("iotdb_it", root, null);
         return (IotdbClient) new IotdbDriver().create(instance, context);
-    }
-
-    private static String text(String key, String fallback) {
-        String system = System.getProperty("iotdb.it." + key);
-        if (system != null && !system.trim().isEmpty()) {
-            return system.trim();
-        }
-        String env = System.getenv("IOTDB_IT_" + key.replace('.', '_').toUpperCase());
-        if (env != null && !env.trim().isEmpty()) {
-            return env.trim();
-        }
-        String value = properties == null ? null : properties.getProperty(key);
-        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 }

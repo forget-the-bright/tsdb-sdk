@@ -163,6 +163,10 @@ public interface HealthCheck {
 
 ## 3. 数据模型
 
+> 查询窗口辅助类 `HistorianUnit`（`common.model`）承载「结束时刻 + 总时长 + 间隔」：`begin`/`end`、
+> `intervalMs`、`count = floor(total/intervalMs)`、`coveredEnd()` 与 `tailMs()`，并可选择按业务时区把
+> 结束时刻向下对齐到间隔网格。`DeltaReader.intervalDeltas(...)` 直接消费该对象。
+
 ### 3.1 `TagInfo`
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -317,7 +321,8 @@ public final class HistoryQuery {
     private final QueryMode mode;
     private final Aggregation aggregation; // AGGREGATED 必填
     private final Duration interval;       // AGGREGATED/INTERPOLATED 必填
-    private final Integer maxPoints;       // 可空，默认 100000
+    private final Integer count;           // 可空；有 interval 时由区间推导且必须一致
+    private final int maxPoints;           // 可空，默认 100000
     private final Direction direction;     // 默认 FORWARD
     private final FillPolicy fill;         // 默认 NONE
     private final boolean partialResultAllowed;
@@ -331,7 +336,11 @@ Builder 校验：
 - `start < end`；
 - `mode=AGGREGATED` 时 `aggregation` 与 `interval` 必填；
 - `interval > 0`；
-- `maxPoints > 0`。
+- `maxPoints > 0`；
+- `count` 可空。设置了 `interval` 时可省略：GE 在适配层用 `HistorianUnit.resolveCount`
+  按区间推导服务端点数，显式填写且与推导值不一致则抛 `IllegalArgumentException`；
+  HLS / IoTDB 按 `interval` 下发、不校验 `count`。只有 `RAW` 的点数上限与
+  无 `interval` 的纯 count 网格必须显式填写。
 
 ### 3.9 枚举
 
@@ -424,22 +433,23 @@ public final class CapabilitySet {
 | TAG_SEARCH | ❌ | ✅ | ❓ | ✅ |
 | TAG_CRUD | ❌ | ✅（原生） | ❓ | ❌ |
 | CURRENT_VALUE | ✅ | ✅ | ❓ | ✅ |
-| RAW_HISTORY | ❌ | ✅ | ❓ | ✅ |
+| RAW_HISTORY | ✅ 1 秒 `BOUND` 桶近似（带 `rawSource` 标注） | ✅ | ❓ | ✅ |
 | AGGREGATED_HISTORY | ✅ | ✅ | ❓ | ✅ |
 | INTERPOLATED_HISTORY | ❌ | ✅ | ❓ | ✅ 驱动内存网格，不外推 |
-| SAMPLED_HISTORY | 🟡 BOUND 语义待确认 | ✅ `calculated LastRawValue` | ❓ | ✅ 任意间隔（服务端 GROUP BY 上限 10000 行） |
+| SAMPLED_HISTORY | ✅ `BOUND` 列充当桶边界值 | ✅ `calculated LastRawValue` | ❓ | ✅ 任意间隔（服务端 GROUP BY 上限 10000 行） |
 | TREND | ❌ | ❌（原生可调） | ❓ | ❌ |
-| CUMULATIVE_DELTA | 🟡 基于 BOUND，待现场确认 | ✅ | ❓ | ✅ |
+| CUMULATIVE_DELTA | ✅ 基于 `BOUND`（生产同款迂回方案） | ✅ | ❓ | ✅ |
 | WRITE | ❌ | ❌（原生可调） | ❓ | 🟡 默认关闭 |
 | DELETE | ❌ | ✅（原生） | ❓ | ❌ |
 | ALARM | ❌ | ✅（原生） | ❓ | ❌ |
-
-> HLS 的 `SAMPLED_HISTORY`/`CUMULATIVE_DELTA` 用 `BOUND` 列充当区间边界值；该语义
-> 尚未在现场确认。GE 的等间隔与差分分别用 `calculated` 的 `LastRawValue=19` 和
 | SUBSCRIPTION | ❌ | ❌ | ❓ | ❌ |
 | SYSTEM_ADMIN | ❌ | ✅（原生） | ❓ | ❌ |
 
-> 原始基线实现；IoTDB 的等间隔用 `GROUP BY ... FILL`、差分用内存相邻桶相减，
+> HLS 没有原生原始点与 `LAST`，`RAW`/`SAMPLED`/差分/`INTERVAL_SUM` 统一基于厂商的
+> `TagValue_Bound` 列：`RAW` 用 1 秒 `BOUND` 桶近似（属性 `rawSource=hls_history_1s_bound`），
+> 其余用 `BOUND` 充当桶边界值。这是生产同款迂回方案，适用前提与换版本复核见 docs/10 §8.1。
+> GE 的等间隔与差分都用 `calculated` 的 `LastRawValue=19`：差分把查询起点前移一个间隔、服务端 `count = 窗口桶数 + 1`，第 0 个样本即基线；扩展桶为空才补一次批量 `raw` 原始基线；
+> IoTDB 的等间隔用 `GROUP BY ... FILL`、差分用内存相邻桶相减，
 > 而整窗累计（`INTERVAL_SUM`）用 `SELECT first_value(m), last_value(m)` 单窗单值，
 > 三者语义不同，不可互相顶替。
 
@@ -646,7 +656,7 @@ HDBTagValue{TagName, OneTagHDBValueList[
 | `history(RAW)` | `SELECT <位号表达式>, … FROM root.<db> WHERE time >= ? AND time < ? ORDER BY TIME … LIMIT ?`，多列共享 LIMIT，不足列逐位号补采 |
 | `history(AGGREGATED)` | `SELECT AVG(<位号表达式>), … FROM root.<db> GROUP BY ([start,end),interval)` |
 | `history(SAMPLED)` | `SELECT LAST_VALUE(<位号表达式>), … FROM root.<db> GROUP BY ([start,end),1s/1m/1h/1d/1mo) FILL(…)` |
-| `deltaHistory` | 同上取桶末值，再一条 `SELECT LAST_VALUE(…) … WHERE time < start` 取基线，内存相邻相减 |
+| `deltaHistory` | 同上取桶末值，但范围改为 `[start - 间隔, end)`：第 0 个桶即基线，每块 1 条 SQL；扩展桶未命中才补一条 `SELECT LAST_VALUE(…) … WHERE time < start`，内存相邻相减 |
 | `history(INTERPOLATED)` | 服务端无等价能力：驱动取窗内原始点与两侧包围点，在内存按 `start + i*step` 线性内插 |
 | `history(TREND)` | 不支持（驱动抛 `TsdbUnsupportedException`） |
 | `write` | `insertTablet`（默认禁用，`allow-write=true` 开启） |

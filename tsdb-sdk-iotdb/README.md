@@ -234,7 +234,7 @@ JSONObject result = nativeApi.nonQuery(
 | `currentBatch(List<IotdbTagPath>)` | `SELECT LAST E(p1), E(p2) FROM root.db` | `ceil(块内位号 / query-batch-size)` |
 | `intervalBatch` / `aggregatedBatch` | 多列 `GROUP BY ([s,e),<lit>) [FILL(...)]` | 同上一块一条 |
 | `intervalSumBatch` | `SELECT first_value(E(p)), last_value(E(p)), …`（无 GROUP BY，1 个逻辑行） | 同上一块一条 |
-| `deltasBatch` | 桶序列 1 条 + `SELECT LAST_VALUE(E(p)), … WHERE time < start` 1 条 | 每块 2 条 |
+| `deltasBatch` | 主查询 1 条 `GROUP BY`（起点前移一个间隔，首桶即基线）；扩展桶未命中才补 1 条 `SELECT LAST_VALUE(E(p)), … WHERE time < start` | 每块 **1 条**，缺桶 2 条 |
 | `rawBatchCompleted` | 多列 raw + union `LIMIT`，欠采列逐位号补采 | 见 §7 |
 | `interpolateBatch` | 窗内多列 raw + 左右包围点多列 raw + 补采 | 每块 3 条起 |
 | `chunks(grouping, tags[, batchSize])` | 不查库，只给出分块 | — |
@@ -355,8 +355,8 @@ security:
 mvn -o test
 ```
 
-L1 离线单测：reactor 258 个（common 61、hls 14、ge 22、spring-boot-starter 1、**iotdb 160**）。
-本模块 160 个的分解：`IotdbQueryServiceTest` 35、`IotdbClientTest` 32、`IotdbSqlTest` 23、
+L1 离线单测：reactor 290 个（common 77、hls 20、ge 28、spring-boot-starter 1、**iotdb 164**）。
+本模块 164 个的分解：`IotdbQueryServiceTest` 39、`IotdbClientTest` 32、`IotdbSqlTest` 23、
 `IotdbTagPathTest` 24、`IotdbTagResolverTest` 17、`GroupingTest` 9、`IotdbConfigTest` 8、
 `IotdbRestQueryExecutorTest` 6、`SeriesKeyIndexTest` 6。
 
@@ -376,6 +376,13 @@ mvn -o -pl tsdb-sdk-iotdb -am test \
   "-DfailIfNoTests=false" \
   "-Diotdb.it=true"
 ```
+
+连接配置与 HLS/GE 同口径：四个 IT 类都经 `IotdbItConfig` 读取，优先级为
+「系统属性 `iotdb.it.<key>` → 环境变量 `IOTDB_IT_<KEY>` → 模块根 `iotdb-it.properties`
+（回退仓库根同名文件）」，可用 `iotdb.it.config` / `IOTDB_IT_CONFIG` 指向任意 properties 文件。
+必填键为 `baseUrl`、`username`、`password`；可选键 `rpcPort`、`transport`、
+`defaultDatabase`、`tag`、`tags`。**测试源码内没有硬编码的现场地址或账号**，
+`iotdb-it.properties` 被 `.gitignore` 排除，不进仓库。
 
 门控用例共 45 个：`IotdbProductionIT` 11（`rest/native/jdbc` 三通道各验证当前值、标签、
 RAW、1 小时等间隔和小时差分 = 9 项，另加 native 单通道的多位号批量 RAW 1 项与 `SHOW VERSION` 1 项）、
@@ -398,6 +405,16 @@ RAW、1 小时等间隔和小时差分 = 9 项，另加 native 单通道的多�
 默认位号 `root.factory.device01.temperature` 本次在 now−30d 窗内有原始点
 （三通道 raw=4 / hourly=200 / deltas=169，tags=8、current=25.6），**不需要 `-Diotdb.it.tag` 覆盖**；
 七族双跑对数仍 `diffs=0`（`rawBatchCompletedColumns`：raw=1、interpolated=2）。
+
+**2026-11-18 17:29 连接配置统一后首跑：45/45 全绿、0 skipped**（27.4 s）。四个 IT 类已全部改走
+`IotdbItConfig`，类内不再有地址/账号；本次 `iotdb-it.properties` 指定
+`tag=root.factory.device02.temperature`，三通道 raw=1 / hourly=200 / deltas=169、
+`serverVersion=2.0.11`，`IotdbTierParityIT` 七族仍 `diffs=0`（raw 916 点、插值 91 槽、等间隔 222 槽）。
+
+**2026-11-19 09:51 差分基线折叠轮复跑：45/45 全绿、0 skipped**。本轮 `deltasBatch` /
+`deltasBatchByInterval` 把基线折进 `[start - 间隔, end)` 的第 0 个桶，稠密时每块 **1 条 SQL**；
+`IotdbTierParityIT` 七族仍 `diffs=0`（等间隔 222 槽、差分 42 桶），证明折叠后的基线与
+「先桶序列、再 `LAST_VALUE … WHERE time < start`」的旧口径数值一致。
 
 > 计数更正：上表与本文早先写的「37 / 44 / `IotdbProductionIT` 10」漏计了
 > `readsBatchRawAndHourlyHistory`（`@ValueSource(strings = {"native"})`）。按当次 surefire XML 复核，

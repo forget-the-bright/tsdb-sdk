@@ -37,7 +37,12 @@ import java.util.List;
  *       <b>例外</b>：{@link QueryMode#AGGREGATED} + {@link Aggregation#INTERVAL_SUM}
  *       是整窗“末值减首值”的单点区间增量，不分片，{@code interval} 与
  *       {@code count} 均非必填；</li>
- *   <li>{@code count} 若设置则必须为正数。</li>
+ *   <li>{@code count} 若设置则必须为正数。设置了 {@code interval} 时，
+ *       需要下发服务端点数的驱动（当前为 GE）会用
+ *       {@link HistorianUnit#resolveCount(Integer, java.time.Instant, java.time.Instant, long)}
+ *       推导点数，此时 {@code count} 可以省略；一旦给出就必须等于推导值，否则抛
+ *       {@link IllegalArgumentException}。真正必须显式 {@code count} 的只有“没有间隔”的场景
+ *       （纯 count 等分网格）与 RAW 的点数上限。</li>
  * </ul>
  *
  * <p>默认值：{@code mode = RAW}、{@code maxPoints = 10000}、
@@ -100,10 +105,14 @@ public final class HistoryQuery {
      * 服务端点数参数，可能为 {@code null}（未设置）。
      *
      * <p>与 {@code interval} 描述的是同一件事的两个维度：interval 指定
-     * “每隔多久取一个点”，count 指定“一共取多少个点”。部分厂商接口
-     * （如 GE 的 calculated/interpolated）两者都接受，且存在
-     * “count=1 + intervalMs=1 取整窗首/末值”这类惯用技巧，因此公共层
-     * 同时暴露二者，由驱动决定如何下发。</p>
+     * “每隔多久取一个点”，count 指定“一共取多少个点”。设置了 interval 时，
+     * 点数可由 {@link HistorianUnit#resolveCount(Integer, java.time.Instant,
+     * java.time.Instant, long)} 精确推导，调用方不必再填；若仍填写，必须与推导值
+     * 一致，否则驱动抛 {@link IllegalArgumentException}。当前只有 GE 走这条推导，
+     * HLS / IoTDB 直接按 {@code interval} 下发、不校验 {@code count}。部分厂商接口
+     * （如 GE 的 calculated/interpolated）在只有 count 时会配合
+     * {@code intervalMs=1}，用“count=1”复刻取整窗首/末值的惯用法，这类
+     * <b>没有间隔</b>的用法仍需显式给出 count。</p>
      *
      * <p>注意与 {@code maxPoints} 的区别：count 是<b>服务端查询参数</b>，
      * 影响厂商实际计算与返回；maxPoints 是<b>客户端兜底截断</b>，
@@ -612,11 +621,16 @@ public final class HistoryQuery {
          * 非正数会在 {@link #build()} 时抛 {@link IllegalArgumentException}；
          * 传 {@code null} 表示清除该参数。</p>
          *
-         * <p>具体语义由驱动按厂商能力实现：例如 GE 驱动把它作为服务端的
-         * {@code count} 参数下发；同时给出 {@code interval} 时以
-         * {@code interval} 为准，仅给出 {@code count} 时 GE 驱动会以
-         * {@code intervalMs=1} 配合 {@code count} 复刻旧 SDK 取整窗首/末值
-         * 的用法。</p>
+         * <p>设置了 {@code interval} 时，点数可以由区间精确推导，<b>不需要</b>再填
+         * {@code count}：需要下发服务端点数的驱动（当前为 GE）会用
+         * {@link HistorianUnit#resolveCount(Integer, java.time.Instant, java.time.Instant, long)}
+         * 计算 {@code floor((end - start) / interval)}。若同时给出 {@code count}，
+         * 它必须等于该推导值，否则抛 {@link IllegalArgumentException}——不让同一个查询
+         * 按文档写和按代码跑出现两种结果。</p>
+         *
+         * <p>必须显式填写 {@code count} 的只剩两类：没有 {@code interval} 的纯 count
+         * 等分网格（{@link QueryMode#INTERPOLATED} 等），以及 {@link QueryMode#RAW}
+         * 的点数上限——这两者都无法从时间窗推导。</p>
          *
          * @param count 服务端点数，必须为正数或 {@code null}
          * @return {@code this}，便于链式调用

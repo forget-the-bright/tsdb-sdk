@@ -14,6 +14,7 @@ import io.github.forget_the_bright.tsdb.common.internal.json.JsonText;
 import io.github.forget_the_bright.tsdb.common.model.Aggregation;
 import io.github.forget_the_bright.tsdb.common.model.Capability;
 import io.github.forget_the_bright.tsdb.common.model.Direction;
+import io.github.forget_the_bright.tsdb.common.model.FillPolicy;
 import io.github.forget_the_bright.tsdb.common.model.HistoryQuery;
 import io.github.forget_the_bright.tsdb.common.model.Quality;
 import io.github.forget_the_bright.tsdb.common.model.QueryMode;
@@ -79,6 +80,10 @@ class GeClientTest {
     private final AtomicReference<String> lastInterpolatedMethod = new AtomicReference<String>();
     private final AtomicReference<String> lastCreateBody = new AtomicReference<String>();
     private final List<String> aggregatedQueries = new ArrayList<String>();
+    /**
+     * calculated 端点的应答生成器；用例可替换它来固定「稠密 / 缺基线桶」两类响应。
+     */
+    private volatile java.util.function.Function<String, String> calculatedResponse;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -143,23 +148,7 @@ class GeClientTest {
             lastAggregatedQuery.set(query);
             lastAggregatedBody.set(readBody(exchange));
             aggregatedQueries.add(query);
-            if (query != null && query.contains("calculationMode=17")) {
-                respond(exchange, 200, "{\"ErrorCode\":0,\"Data\":["
-                        + "{\"TagName\":\"AI-101\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
-                        + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"100.5\",\"Quality\":3}]},"
-                        + "{\"TagName\":\"AI-BAD\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
-                        + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"50\",\"Quality\":0}]}]}");
-            } else if (query != null && query.contains("calculationMode=19")) {
-                respond(exchange, 200, "{\"ErrorCode\":0,\"Data\":["
-                        + "{\"TagName\":\"AI-101\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
-                        + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"110.75\",\"Quality\":3}]},"
-                        + "{\"TagName\":\"AI-BAD\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
-                        + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"999\",\"Quality\":3}]}]}");
-            } else {
-                respond(exchange, 200, "{\"ErrorCode\":0,\"Data\":["
-                        + "{\"TagName\":\"AI-101\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
-                        + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"3.5\",\"Quality\":1}]}]}");
-            }
+            respond(exchange, 200, calculatedResponse.apply(query));
         });
         server.createContext("/historian-rest-api/v1/datapoints/interpolated", exchange -> {
             lastInterpolatedMethod.set(exchange.getRequestMethod());
@@ -174,6 +163,7 @@ class GeClientTest {
             respond(exchange, 200, "{\"ErrorCode\":0,\"ErrorMessage\":\"\"}");
         });
         server.start();
+        calculatedResponse = GeClientTest::defaultCalculatedBody;
 
         TsdbInstanceConfig config = new TsdbInstanceConfig();
         config.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
@@ -356,6 +346,113 @@ class GeClientTest {
     }
 
     @Test
+    void readsMillisecondIntervalDeltaWithoutRounding() {
+        // 扩展起点 22:08:20 起的第 0 个样本就是基线桶，其余 6 个是窗口桶
+        calculatedResponse = query -> calculatedBody("AI-101",
+                new String[]{"2023-11-14 22:08:20", "2023-11-14 22:13:20", "2023-11-14 22:18:20",
+                        "2023-11-14 22:23:20", "2023-11-14 22:28:20", "2023-11-14 22:33:20",
+                        "2023-11-14 22:38:20"},
+                new String[]{"100.0", "110.0", "120.0", "130.0", "140.0", "150.0", "160.0"});
+        aggregatedQueries.clear();
+
+        java.util.List<io.github.forget_the_bright.tsdb.common.model.DeltaSeries> deltas =
+                client.deltaHistory().readByInterval(
+                        java.util.Arrays.asList("AI-101"),
+                        Instant.ofEpochSecond(1700000000L), Instant.ofEpochSecond(1700001800L),
+                        300_000L, Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 64);
+
+        // 基线折进扩展窗：整批位号只发 1 次 calculated，
+        // 起点 = 窗口起点 - 1 个间隔，count = 6 个窗口桶 + 1 个基线桶
+        assertEquals(1, aggregatedQueries.size());
+        String query = aggregatedQueries.get(0);
+        assertTrue(query.contains("calculationMode=19"));
+        assertTrue(query.contains("intervalMs=300000"));
+        assertTrue(query.contains("start=2023-11-14T22%3A08%3A20Z"));
+        assertTrue(query.contains("count=7"));
+        assertEquals(1, deltas.size());
+        assertEquals(6, deltas.get(0).getPoints().size());
+        assertEquals(10.0, deltas.get(0).getPoints().get(0).getDelta(), 1e-9);
+    }
+
+    @Test
+    void fallsBackToABatchedRawBaselineWhenTheExtendedBucketIsAbsent() {
+        // 首样本是扩展桶的占位（Value 为空），不是有效基线；窗口桶从 22:13:20 起共 6 个
+        calculatedResponse = query -> calculatedBody("AI-101",
+                new String[]{"2023-11-14 22:08:20", "2023-11-14 22:13:20", "2023-11-14 22:18:20",
+                        "2023-11-14 22:23:20", "2023-11-14 22:28:20", "2023-11-14 22:33:20",
+                        "2023-11-14 22:38:20"},
+                new String[]{null, "110.0", "120.0", "130.0", "140.0", "150.0", "160.0"});
+        aggregatedQueries.clear();
+
+        java.util.List<io.github.forget_the_bright.tsdb.common.model.DeltaSeries> deltas =
+                client.deltaHistory().readByInterval(
+                        java.util.Arrays.asList("AI-101"),
+                        Instant.ofEpochSecond(1700000000L), Instant.ofEpochSecond(1700001800L),
+                        300_000L, Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 64);
+
+        // 主查询 1 次 + 兜底 1 次批量 raw（count=1，反向），不逐位号
+        assertEquals(1, aggregatedQueries.size());
+        assertTrue(lastRawQuery.get().contains("count=1"));
+        assertTrue(lastRawQuery.get().contains("direction=0"));
+        assertEquals(6, deltas.get(0).getPoints().size());
+        assertEquals(108.5, deltas.get(0).getPoints().get(0).getDelta(), 1e-9);
+    }
+
+    @Test
+    void derivesServerCountFromRangeAndIntervalWithoutDeclaredCount() {
+        HistoryQuery aggregated = HistoryQuery.builder()
+                .tags("AI-101")
+                .range(Instant.parse("2023-11-14T00:00:00Z"), Instant.parse("2023-11-15T00:00:00Z"))
+                .mode(QueryMode.AGGREGATED)
+                .aggregation(Aggregation.LAST)
+                .interval(Duration.ofMinutes(1))
+                .build();
+        client.history().read(aggregated);
+        assertTrue(lastAggregatedQuery.get().contains("count=1440"));
+
+        HistoryQuery interpolated = HistoryQuery.builder()
+                .tags("AI-101")
+                .range(Instant.parse("2023-11-14T00:00:00Z"), Instant.parse("2023-11-15T00:00:00Z"))
+                .mode(QueryMode.INTERPOLATED)
+                .interval(Duration.ofMinutes(5))
+                .build();
+        client.history().read(interpolated);
+        assertTrue(lastInterpolatedQuery.get().contains("count=288"));
+    }
+
+    @Test
+    void rejectsDeclaredCountThatConflictsWithRangeAndInterval() {
+        HistoryQuery aggregated = HistoryQuery.builder()
+                .tags("AI-101")
+                .range(Instant.parse("2023-11-14T00:00:00Z"), Instant.parse("2023-11-15T00:00:00Z"))
+                .mode(QueryMode.AGGREGATED)
+                .aggregation(Aggregation.LAST)
+                .interval(Duration.ofMinutes(1))
+                .count(24)
+                .build();
+        assertThrows(IllegalArgumentException.class, () -> client.history().read(aggregated));
+
+        HistoryQuery sampled = HistoryQuery.builder()
+                .tags("AI-101")
+                .range(Instant.parse("2023-11-14T00:00:00Z"), Instant.parse("2023-11-15T00:00:00Z"))
+                .mode(QueryMode.SAMPLED)
+                .interval(Duration.ofMinutes(1))
+                .count(24)
+                .build();
+        assertThrows(IllegalArgumentException.class, () -> client.history().read(sampled));
+    }
+
+    @Test
+    void rejectsCalendarMonthDelta() {
+        assertThrows(io.github.forget_the_bright.tsdb.common.exception.TsdbUnsupportedException.class,
+                () -> client.deltaHistory().read(
+                        java.util.Arrays.asList("AI-101"),
+                        Instant.ofEpochSecond(1700000000L), Instant.ofEpochSecond(1700001800L),
+                        io.github.forget_the_bright.tsdb.common.model.TimeGranularity.MONTH,
+                        Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 64));
+    }
+
+    @Test
     void mapsSumToRawTotalNine() {
         // 厂商实证：9=RawTotal 是算术累加和（公共 SUM）；
         // 24=SumValue 是末值减首值的区间累计（INTERVAL_SUM），不得混用。
@@ -431,9 +528,24 @@ class GeClientTest {
         assertTrue(body.get("direction") instanceof String);
         assertEquals("1", body.getString("direction"));
         assertEquals("AI-101", body.getString("tagNames"));
-        // SAMPLED 忽略 aggregation，不下发 calculationMode；未设 count 则不出现。
+        // SAMPLED 忽略 aggregation，不下发 calculationMode；区间已知时 count
+        // 由时间窗与间隔精确推导（24 小时 / 1 分钟 = 1440）。
         assertFalse(body.containsKey("calculationMode"));
-        assertFalse(body.containsKey("count"));
+        assertEquals(1440, body.getIntValue("count"));
+    }
+
+    @Test
+    void sampledHistoryWithoutIntervalForwardsDeclaredCount() {
+        // 没有 interval 时无法推导，显式 count 原样下发（SAMPLED 要求二者至少一个）。
+        HistoryQuery query = HistoryQuery.builder()
+                .tags("AI-101")
+                .range(Instant.parse("2023-11-14T00:00:00Z"), Instant.parse("2023-11-15T00:00:00Z"))
+                .mode(QueryMode.SAMPLED)
+                .count(10)
+                .build();
+        client.history().read(query);
+        JSONObject body = json(lastSampledBody.get());
+        assertEquals(10, body.getIntValue("count"));
     }
 
     @Test
@@ -569,6 +681,56 @@ class GeClientTest {
 
     private static JSONObject json(String text) {
         return JSON.parseObject(text);
+    }
+
+    /**
+     * 默认 calculated 应答：按 calculationMode 返回首值（17）/末值（19），
+     * 供 INTERVAL_SUM 双请求算法断言；AI-BAD 首样本质量为 BAD（厂商码 0）。
+     *
+     * @param query 查询串
+     * @return 应答 JSON
+     */
+    private static String defaultCalculatedBody(String query) {
+        if (query != null && query.contains("calculationMode=17")) {
+            return "{\"ErrorCode\":0,\"Data\":["
+                    + "{\"TagName\":\"AI-101\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
+                    + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"100.5\",\"Quality\":3}]},"
+                    + "{\"TagName\":\"AI-BAD\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
+                    + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"50\",\"Quality\":0}]}]}";
+        }
+        if (query != null && query.contains("calculationMode=19")) {
+            return "{\"ErrorCode\":0,\"Data\":["
+                    + "{\"TagName\":\"AI-101\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
+                    + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"110.75\",\"Quality\":3}]},"
+                    + "{\"TagName\":\"AI-BAD\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
+                    + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"999\",\"Quality\":3}]}]}";
+        }
+        return "{\"ErrorCode\":0,\"Data\":["
+                + "{\"TagName\":\"AI-101\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
+                + "{\"TimeStamp\":\"2023-11-14 22:14:00\",\"Value\":\"3.5\",\"Quality\":1}]}]}";
+    }
+
+    /**
+     * 生成单一位号、等间隔的 calculated 应答。
+     *
+     * @param tag        位号
+     * @param timestamps 时间文本，与数值一一对应
+     * @param values     数值文本；{@code null} 表示该桶无值（JSON {@code null}）
+     * @return 应答 JSON
+     */
+    private static String calculatedBody(String tag, String[] timestamps, String[] values) {
+        StringBuilder samples = new StringBuilder();
+        for (int i = 0; i < timestamps.length; i++) {
+            if (i > 0) {
+                samples.append(',');
+            }
+            samples.append("{\"TimeStamp\":\"").append(timestamps[i]).append("\",\"Value\":")
+                    .append(values[i] == null ? "null" : "\"" + values[i] + "\"")
+                    .append(",\"Quality\":3}");
+        }
+        return "{\"ErrorCode\":0,\"Data\":[{\"TagName\":\"" + tag
+                + "\",\"ErrorCode\":0,\"DataType\":\"Float\",\"Samples\":["
+                + samples + "]}]}";
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {

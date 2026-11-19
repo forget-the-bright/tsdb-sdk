@@ -44,10 +44,11 @@
  *     <td>质量档位、值类型、聚合函数、历史模式、时间粒度、方向、填充策略、能力项</td>
  *   </tr>
  *   <tr>
- *     <td>查询构造（2）</td>
+ *     <td>查询构造（3）</td>
  *     <td>{@link io.github.forget_the_bright.tsdb.common.model.HistoryQuery}、
- *         {@link io.github.forget_the_bright.tsdb.common.model.TagQuery}</td>
- *     <td>历史查询参数与校验、位号目录查询条件</td>
+ *         {@link io.github.forget_the_bright.tsdb.common.model.TagQuery}、
+ *         {@link io.github.forget_the_bright.tsdb.common.model.HistorianUnit}</td>
+ *     <td>历史查询参数与校验、位号目录查询条件、指定间隔的窗口计算</td>
  *   </tr>
  *   <tr>
  *     <td>结果容器（8）</td>

@@ -31,7 +31,7 @@ src/main/java/io/github/forget_the_bright/tsdb/ge
     └── GeEndpoint.java          92 个端点目录（Data/Tags/Systems/Collectors/Alarms）
 ```
 
-测试：`ge/GeClientTest`（22 例）；门控只读 IT 在 `ge/it`：`GeProductionIT`、`GeComparisonIT`
+测试：`ge/GeClientTest`（28 例）；门控只读 IT 在 `ge/it`：`GeProductionIT`、`GeComparisonIT`
 （`-Dge.it=true` 才跑）。
 
 ### 2.1 按任务找类
@@ -125,7 +125,8 @@ JSONObject raw = JsonText.object(nativeApi.invoke(GeEndpoint.GET_RAW_DATA_BY_PAT
 - `INTERPOLATED_HISTORY`
 - `SAMPLED_HISTORY`（POST `/v1/datapoints/sampled`，固定 `samplingMode=2`（Interpolated）
   + `queryModifier=1`，此模式忽略 `aggregation`）
-- `CUMULATIVE_DELTA`（末值分桶 + 起点前原始值基线，内存相邻相减）
+- `CUMULATIVE_DELTA`（末值分桶：主查询起点前移一个间隔、`count = 窗口桶数 + 1`，首桶作基线不输出；
+  扩展桶为空才补一次批量 raw 基线；内存相邻相减）
 
 GE 的写入接口存在，但当前公共层不声明 `WRITE`，写会话只读；需要写入时
 直接调用原生 `GeNativeApi.invoke(GeEndpoint.CREATE_TAG_DATA, body)`，并自行
@@ -188,6 +189,10 @@ alarms 查询。测试只读，不会修改现场数据；凭据文件已被 `.g
 
 2026-11-12 已对 `172.16.176.9` 实际执行：10 个用例全部通过（0 失败、0 跳过），
 其中 `readsRealSampledHistoryAndCumulativeDelta` 验证 1 小时等间隔与累计差分。
+
+**2026-11-19 09:47–09:50 差分折叠与 `count` 推导轮复跑：19/19 全绿**
+（`GeProductionIT` 10 + `GeComparisonIT` 9），`MATCH=2021 DIFF=0 OLD_ONLY=0 NEW_ONLY=0 PROBE=434`。
+等间隔/累计差分逐点 `MATCH`，说明折叠基线（首桶作锚点）与旧的「一次批量 raw 基线」数值一致。
 
 `GeComparisonIT` 是同一开关下的新旧逐点一致性对比：用同一批位号、同一时间窗同时跑
 参照 SDK `GE_REST_SDK`（基准）与本模块，逐点比对时间戳、值与厂商原始质量码，

@@ -17,16 +17,10 @@ import io.github.forget_the_bright.tsdb.common.model.TimeGranularity;
 import io.github.forget_the_bright.tsdb.common.spi.DriverContext;
 import io.github.forget_the_bright.tsdb.iotdb.IotdbClient;
 import io.github.forget_the_bright.tsdb.iotdb.IotdbDriver;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -34,7 +28,6 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -95,23 +88,8 @@ class IotdbTierParityIT {
     private static final long MINUTE = 60_000L;
     private static final long HOUR = 60 * MINUTE;
 
-    private static Properties properties;
     private static Instant anchorLast;
     private static List<String> populated;
-
-    @BeforeAll
-    static void loadProperties() throws IOException {
-        properties = new Properties();
-        Path local = Paths.get("iotdb-it.properties");
-        if (!Files.exists(local)) {
-            local = Paths.get("tsdb-sdk-iotdb", "iotdb-it.properties");
-        }
-        if (Files.exists(local)) {
-            try (InputStream in = Files.newInputStream(local)) {
-                properties.load(in);
-            }
-        }
-    }
 
     @Test
     void currentValuesMatchAcrossTheThreeBatchShapes() {
@@ -505,11 +483,11 @@ class IotdbTierParityIT {
 
         TsdbInstanceConfig instance = new TsdbInstanceConfig();
         instance.setType("iotdb");
-        instance.setBaseUrl(text("baseUrl", "http://192.168.3.199:18080"));
-        instance.getAuth().setUsername(text("username", "root"));
-        instance.getAuth().setPassword(text("password", "root"));
-        instance.getOptions().put("transport", text("transport", "rest"));
-        instance.getOptions().put("rpc-port", text("rpcPort", "6667"));
+        instance.setBaseUrl(IotdbItConfig.required("baseUrl"));
+        instance.getAuth().setUsername(IotdbItConfig.required("username"));
+        instance.getAuth().setPassword(IotdbItConfig.required("password"));
+        instance.getOptions().put("transport", IotdbItConfig.text("transport", "rest"));
+        instance.getOptions().put("rpc-port", IotdbItConfig.text("rpcPort", "6667"));
         instance.getOptions().put("query-batch-size", String.valueOf(batchSize));
         instance.getOptions().put("query-batch-scope", scope);
 
@@ -518,18 +496,5 @@ class IotdbTierParityIT {
         DriverContext context = new DriverContext(
                 "iotdb_parity_" + scope + "_" + batchSize, root, null);
         return (IotdbClient) new IotdbDriver().create(instance, context);
-    }
-
-    private static String text(String key, String fallback) {
-        String system = System.getProperty("iotdb.it." + key);
-        if (system != null && !system.trim().isEmpty()) {
-            return system.trim();
-        }
-        String env = System.getenv("IOTDB_IT_" + key.replace('.', '_').toUpperCase());
-        if (env != null && !env.trim().isEmpty()) {
-            return env.trim();
-        }
-        String value = properties == null ? null : properties.getProperty(key);
-        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 }

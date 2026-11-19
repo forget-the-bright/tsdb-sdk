@@ -137,18 +137,43 @@ List<DeltaSeries> deltas = client.deltaHistory().read(
 
 算法：
 
-1. 按粒度对 `[start, end)` 分桶，每桶取 `LAST`，得到桶末累计值；
-2. 查 `time < start` 的最后一个值，作为第一个桶的基线；
+1. 查询范围向前扩一个间隔，对 `[start - interval, end)` 分桶，每桶取 `LAST`；
+2. 第 0 个桶就是「起点前最后一个桶」，它的值直接作基线、不输出；
 3. 内存中相邻相减：`delta = 本桶末值 - 上一桶末值`；
 4. 负差视为计数器清零/回绕：`reset=true`，`delta` 取本桶末值；
 5. 桶为空：`missing=true`，`delta=null`，并保留上一个有效值继续参与下一桶计算；
 6. `Direction.BACKWARD` 时结果反转。
 
-取数是**每个块两条 SQL**：桶序列（每位号一列）+ 基线（同一块的多列 `LAST_VALUE`，
-`WHERE time < start`）。差分没有“部分结果”的概念——基线缺失时第一桶就无法判定是否清零，
+取数默认**每个块一条 SQL**：扩展窗的桶序列（每位号一列）。`GROUP BY` 返回桶首时间戳，
+首个点的时间等于扩展起点且值非空即命中基线，直接从桶列表移除。只有扩展桶为空
+（稀疏位号，或 `FILL` 填不出更早的值）时，才为这些位号在块内补一条
+`LAST_VALUE ... WHERE time < start` 的批量兜底，每块最坏 2 条——不会退化成逐位号请求。
+差分没有“部分结果”的概念——基线查询整体失败时第一桶就无法判定是否清零，
 所以整块失败直接上抛，不伪装成单个位号失败。
 
 `DeltaPoint` 同时带 `timestamp`、`timestampDate`、`timestampText`，前端可直接展示 `timestampText`。
+
+### 任意毫秒间隔
+
+`TimeGranularity` 只有 1s/1m/1h/1d/1mo，表达不了 5 分钟、30 分钟、8 小时。现场的这些间隔用
+`readByInterval`，或直接用「结束时刻 + 总时长 + 间隔」的 `intervalDeltas`：
+
+```java
+List<DeltaSeries> fiveMinute = client.deltaHistory().readByInterval(
+        tags, start, end, 300_000L,
+        Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 1000);
+
+List<DeltaSeries> last8h = client.deltaHistory()
+        .intervalDeltas(tags, end, 8, TimeUnit.HOURS, 5, TimeUnit.MINUTES,
+                FillPolicy.NONE, Direction.FORWARD, 1000);
+```
+
+区别只有两条：间隔以毫秒表达；**分桶网格锚定在传入的 `start`/`begin`**，不按自然边界归整。
+需要自然边界时，先用 `HistorianUnit.calculate(..., options.zone, true)` 归整结束时刻。
+SQL 通过 `IotdbSql.intervalLiteral(intervalMillis)` 生成 `5m`/`250ms` 等字面量；基线同样折进
+`[start - interval, end)` 的第 0 个桶，命中时每块仍是 1 条 SQL，缺桶才补 1 条批量兜底。
+月差分继续走 `TimeGranularity.MONTH`：扩展起点用业务时区做日历减月（`minusMonths(1)`），
+与 `1mo` 的分组边界一致。
 
 ## 7. 点位路径与默认数据库
 
@@ -250,6 +275,8 @@ P10 一类会走 SDK 生成的语句，所以改造后必须复跑。2026-11-13 
 | 16:19 | 默认翻档后整体复跑 45 项 | 45 全绿、0 skipped | `database` |
 | 2026-11-16 12:25 | Hutool/fastjson 迁移 + 门户拆分后整体复跑 45 项 | 42 绿；`IotdbProductionIT#readsRawAndHourlyHistory` 3 例失败是默认位号 `root.factory.device01.temperature` 近 7 天无原始点，改 `-Diotdb.it.tag=root.simdemo.boiler_01.temperature` 后 `IotdbProductionIT` **11/11 全绿**（raw=100 / hourly=168 / deltas=169）；`IotdbTierParityIT` 七族仍 `diffs=0` | `database` |
 | 2026-11-16 16:50 | 包结构归位轮（纯移动）整体复跑 45 项 | **45 全绿、0 skipped**，默认位号 `root.factory.device01.temperature` 本次有原始点（raw=4 / hourly=200 / deltas=169），**无需 `-Diotdb.it.tag` 覆盖**；七族 `diffs=0` | `database` |
+| 2026-11-19 09:51 | 差分基线折叠轮整体复跑 45 项 | **45 全绿、0 skipped**；`IotdbTierParityIT` 七族 `diffs=0`（等间隔 222 槽与 42 个差分桶是折叠基线的主证据）；差分每块 1 条 `GROUP BY`（起点前移一个间隔），扩展桶未命中才补 1 条批量 `LAST_VALUE` | `database` |
+| 2026-11-18 17:29 | 连接配置统一到 `iotdb-it.properties` 后首跑 45 项 | **45 全绿、0 skipped**（27.4 s），三通道 raw=1 / hourly=200 / deltas=169，`serverVersion=2.0.11`；`IotdbTierParityIT` 七族仍 `diffs=0`（raw 916 点、插值 91 槽、等间隔 222 槽），位号由文件里的 `tag`/`tags` 指定，类内已无硬编码地址 | `database` |
 
 > 表中 2026-11-13 与 12:25 三行的项数已按 2026-11-16 的 surefire XML 复核更正：原文写 37/44，
 > 漏计 `IotdbProductionIT#readsBatchRawAndHourlyHistory`（native 单通道）。测试源除 import 外未改，
@@ -272,7 +299,10 @@ mvn -q -pl tsdb-sdk-iotdb -am test `
 ```
 
 没有 `-Diotdb.it=true` 时这些测试整体跳过，不访问现场。地址、账号、点位按
-「系统属性 → 环境变量 → `iotdb-it.properties`」读取，凭据不进仓库。
+「系统属性 `iotdb.it.<key>` → 环境变量 `IOTDB_IT_<KEY>` → `iotdb-it.properties`」读取，
+凭据不进仓库。键为 `baseUrl`、`username`、`password`、`rpcPort`、`transport`、
+`defaultDatabase`、`tag`、`tags`（可选 `config` 指向任意 properties 文件），
+必填键缺失时 `IotdbItConfig` 会直接报错并指出键名；四个 IT 类内没有硬编码的现场地址或账号。
 
 ## 10. 已知限制
 
