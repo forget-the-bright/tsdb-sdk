@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
 import io.github.forget_the_bright.tsdb.ge.GeMapper;
 
 /**
@@ -57,10 +58,10 @@ public final class GeHistoryAdapter implements HistoryReader {
         if (query == null) {
             throw new IllegalArgumentException("query must not be null");
         }
-        if (query.getFill() != null && query.getFill() != FillPolicy.NONE) {
+    /*    if (query.getFill() != null && query.getFill() != FillPolicy.NONE) {
             throw support.unsupported(new TsdbUnsupportedException("GE history does not support fill policy "
                     + query.getFill()), "readHistory");
-        }
+        }*/
         QueryMode mode = query.getMode();
         if (mode == QueryMode.AGGREGATED && query.getAggregation() == Aggregation.INTERVAL_SUM) {
             return intervalSumSeries(query);
@@ -87,8 +88,9 @@ public final class GeHistoryAdapter implements HistoryReader {
                     2, 1L, intervalMillis, intervalMillis == null ? count : Integer.valueOf(serverCount),
                     null, query.getDirection());
         } else if (mode == QueryMode.INTERPOLATED) {
+            Long queryModifier = query.getFill() == FillPolicy.PREVIOUS ? 1L : null;
             raw = support.nativeApi().readInterpolated(query.getTags(), query.getStart(), query.getEnd(),
-                    serverCount, serverInterval);
+                    serverCount, serverInterval, queryModifier);
         } else {
             throw support.unsupported(new TsdbUnsupportedException(
                     "GE driver does not support history mode " + mode), "readHistory");
@@ -110,8 +112,8 @@ public final class GeHistoryAdapter implements HistoryReader {
             if (item.getErrorCode() != null) {
                 if (!query.isPartialResultAllowed()) {
                     throw support.query(new TsdbQueryException("GE query failed for tag " + tag
-                            + ": ErrorCode=" + item.getErrorCode()
-                            + (item.getErrorMessage() == null ? "" : " " + item.getErrorMessage())),
+                                    + ": ErrorCode=" + item.getErrorCode()
+                                    + (item.getErrorMessage() == null ? "" : " " + item.getErrorMessage())),
                             "readHistory");
                 }
                 result.add(TagSeries.builder(tag)

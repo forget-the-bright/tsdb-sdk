@@ -47,7 +47,7 @@ import java.util.List;
  *
  * <p>默认值：{@code mode = RAW}、{@code maxPoints = 10000}、
  * {@code direction = FORWARD}、{@code fill = NONE}、
- * {@code partialResultAllowed = false}、{@code includeQuality = true}。</p>
+ * {@code partialResultAllowed = true}、{@code includeQuality = true}。</p>
  *
  * <p>不可变性与线程安全：位号列表以
  * {@link Collections#unmodifiableList} 包装的防御性副本保存，
@@ -211,7 +211,7 @@ public final class HistoryQuery {
      *
      * <p>构造器初始状态：位号列表为空、{@code mode = RAW}、
      * {@code maxPoints = 10000}、{@code direction = FORWARD}、
-     * {@code fill = NONE}、{@code partialResultAllowed = false}、
+     * {@code fill = NONE}、{@code partialResultAllowed = true}、
      * {@code includeQuality = true}；{@code start}、{@code end}、
      * {@code aggregation}、{@code interval}、{@code count} 未设置。
      * 构造器不是线程安全的，请勿在多线程间共享同一个 {@code Builder}。</p>
@@ -226,7 +226,7 @@ public final class HistoryQuery {
      * 返回待查询的位号名列表。
      *
      * @return 非 {@code null} 的只读列表，至少包含一个元素，元素均非空白；
-     *         顺序即调用方设置时的顺序，驱动返回结果时通常也按该顺序排列
+     * 顺序即调用方设置时的顺序，驱动返回结果时通常也按该顺序排列
      */
     public List<String> getTags() {
         return tags;
@@ -317,7 +317,7 @@ public final class HistoryQuery {
      * 返回读取方向。
      *
      * @return 非 {@code null} 的方向，默认 {@link Direction#FORWARD}；
-     *         同时决定结果顺序与截断时保留哪一端
+     * 同时决定结果顺序与截断时保留哪一端
      */
     public Direction getDirection() {
         return direction;
@@ -327,8 +327,8 @@ public final class HistoryQuery {
      * 返回插值补点策略。
      *
      * @return 非 {@code null} 的补点策略，默认 {@link FillPolicy#NONE}；
-     *         仅在 {@link QueryMode#INTERPOLATED} 模式下真正生效，
-     *         其他模式驱动可忽略
+     * 仅在 {@link QueryMode#INTERPOLATED} 模式下真正生效，
+     * 其他模式驱动可忽略
      */
     public FillPolicy getFill() {
         return fill;
@@ -337,8 +337,8 @@ public final class HistoryQuery {
     /**
      * 是否允许返回不完整的结果。
      *
-     * <p>为 {@code true} 时，驱动在结果被 {@code maxPoints} 截断、或部分位号
-     * 查询失败的情况下可以返回已拿到的数据；为 {@code false}（默认）时，
+     * <p>为 {@code true} （默认）时，驱动在结果被 {@code maxPoints} 截断、或部分位号
+     * 查询失败的情况下可以返回已拿到的数据；为 {@code false}时，
      * 驱动应把这些情况视为失败并抛出 {@code TsdbQueryException}，
      * 而不是悄悄返回残缺数据。</p>
      *
@@ -428,9 +428,9 @@ public final class HistoryQuery {
         private FillPolicy fill = FillPolicy.NONE;
 
         /**
-         * 是否允许部分结果，默认 {@code false}。
+         * 是否允许部分结果，默认 {@code true}。
          */
-        private boolean partialResultAllowed;
+        private boolean partialResultAllowed = true;
 
         /**
          * 是否包含质量码，默认 {@code true}。
@@ -562,7 +562,7 @@ public final class HistoryQuery {
          *
          * @param date 待转换时刻，允许为 {@code null}
          * @return {@code date} 为 {@code null} 时返回 {@code null}，
-         *         否则返回 {@link Date#toInstant()} 的转换结果
+         * 否则返回 {@link Date#toInstant()} 的转换结果
          */
         private static Instant toInstant(Date date) {
             return date == null ? null : date.toInstant();

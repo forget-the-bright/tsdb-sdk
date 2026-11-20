@@ -279,4 +279,16 @@ public final class TagInfo {
             return new TagInfo(this);
         }
     }
+
+    @Override
+    public String toString() {
+        return "TagInfo{" +
+                "tagName='" + tagName + '\'' +
+                ", description='" + description + '\'' +
+                ", valueType=" + valueType +
+                ", unit='" + unit + '\'' +
+                ", vendorType='" + vendorType + '\'' +
+                ", attributes=" + attributes +
+                '}';
+    }
 }

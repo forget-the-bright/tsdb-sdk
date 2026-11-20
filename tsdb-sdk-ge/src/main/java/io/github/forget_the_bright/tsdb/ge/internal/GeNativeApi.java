@@ -346,12 +346,15 @@ public final class GeNativeApi {
      * @return 每个位号一个序列，非 {@code null}
      */
     public List<GeModels.Series> readInterpolated(Collection<String> tagNames, Instant start, Instant end,
-                                                  int count, long intervalMillis) {
+                                                  int count, long intervalMillis, Long queryModifier) {
         LinkedHashMap<String, Object> query = new LinkedHashMap<>();
         query.put("start", config.getTimeConfig().formatRequest(start));
         query.put("end", config.getTimeConfig().formatRequest(end));
         query.put("count", Math.max(1, count));
         query.put("intervalMs", Math.max(1L, intervalMillis));
+        if (queryModifier != null){
+            query.put("queryModifier", queryModifier);
+        }
         LinkedHashMap<String, Object> body = new LinkedHashMap<>();
         body.put("tagNames", joinTagsPlain(tagNames));
         return parseData(invoke(GeEndpoint.GET_INTERPOLATED_BY_REQUEST_PARAM_POST, null, query, body));
@@ -361,7 +364,7 @@ public final class GeNativeApi {
      * 批量读取插值数据（遗留 GET 版本）。
      *
      * <p>保留作为原生逃生口与生产对比基准；大批量位号请改用
-     * {@link #readInterpolated(Collection, Instant, Instant, int, long)}。</p>
+     * {@link #readInterpolated(Collection, Instant, Instant, int, long, Long)}。</p>
      *
      * @param tagNames       位号集合
      * @param start          区间起始时刻（含）
@@ -454,7 +457,7 @@ public final class GeNativeApi {
      * @param start    区间起始时刻（含）
      * @param end      区间结束时刻（不含）
      * @return 位号 → 区间增量字符串（{@link BigDecimal#toPlainString()}），
-     *         顺序与请求一致，非 {@code null}
+     * 顺序与请求一致，非 {@code null}
      * @throws TsdbDataException 值不可解析或响应缺失位号时
      */
     public Map<String, String> readIntervalSum(Collection<String> tagNames, Instant start, Instant end) {

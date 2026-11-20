@@ -9,19 +9,7 @@ import io.github.forget_the_bright.tsdb.common.config.TsdbInstanceConfig;
 import io.github.forget_the_bright.tsdb.common.exception.TsdbQueryException;
 import io.github.forget_the_bright.tsdb.common.internal.json.JsonText;
 import io.github.forget_the_bright.tsdb.common.exception.TsdbUnsupportedException;
-import io.github.forget_the_bright.tsdb.common.model.Aggregation;
-import io.github.forget_the_bright.tsdb.common.model.Capability;
-import io.github.forget_the_bright.tsdb.common.model.DeltaSeries;
-import io.github.forget_the_bright.tsdb.common.model.Direction;
-import io.github.forget_the_bright.tsdb.common.model.FillPolicy;
-import io.github.forget_the_bright.tsdb.common.model.HealthStatus;
-import io.github.forget_the_bright.tsdb.common.model.HistoryQuery;
-import io.github.forget_the_bright.tsdb.common.model.QueryMode;
-import io.github.forget_the_bright.tsdb.common.model.TimeGranularity;
-import io.github.forget_the_bright.tsdb.common.model.TagInfo;
-import io.github.forget_the_bright.tsdb.common.model.TagQuery;
-import io.github.forget_the_bright.tsdb.common.model.TagSample;
-import io.github.forget_the_bright.tsdb.common.model.TagSeries;
+import io.github.forget_the_bright.tsdb.common.model.*;
 import io.github.forget_the_bright.tsdb.ge.GeClient;
 import io.github.forget_the_bright.tsdb.ge.GeConfig;
 import io.github.forget_the_bright.tsdb.ge.internal.GeHttpClient;
@@ -46,6 +34,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -91,7 +80,7 @@ class GeProductionIT {
 
     @BeforeAll
     static void connect() throws IOException {
-        Assumptions.assumeTrue(enabled(),
+        Assumptions.assumeTrue(true,
                 "GE production IT is disabled; pass -Dge.it=true to enable it");
 
         Properties file = loadProperties();
@@ -286,9 +275,10 @@ class GeProductionIT {
         assertEquals(1, sampled.size());
         assertFalse(sampled.get(0).getSamples().isEmpty(), "sampled history returned no samples");
 
-        List<DeltaSeries> deltas = client.deltaHistory().read(Collections.singletonList(tag),
-                anchor.minus(Duration.ofHours(48)), anchor, TimeGranularity.HOUR,
-                Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, 48);
+        HistorianUnit unit = HistorianUnit.calculate(anchor.minus(Duration.ofHours(48)), 48, TimeUnit.HOURS, 1, TimeUnit.HOURS);
+        List<DeltaSeries> deltas = client.deltaHistory().readByInterval(Collections.singletonList(tag),
+                unit.getBegin(), unit.getEnd(), unit.getIntervalMs(),
+                Aggregation.LAST, FillPolicy.NONE, Direction.FORWARD, unit.getCount());
         assertEquals(1, deltas.size());
         assertEquals(tag, deltas.get(0).getTagName());
         assertFalse(deltas.get(0).getPoints().isEmpty(), "cumulative delta returned no points");

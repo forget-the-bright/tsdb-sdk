@@ -1,5 +1,7 @@
 package io.github.forget_the_bright.tsdb.common.model;
 
+import cn.hutool.core.convert.Convert;
+import cn.hutool.core.util.ObjectUtil;
 import io.github.forget_the_bright.tsdb.common.config.TimeConfig;
 
 import java.time.Instant;
@@ -62,7 +64,7 @@ public final class Sample {
     /**
      * 实际值，可能为 {@code null}（表示该点无有效值）。
      */
-    private final Object value;
+    private Object value;
 
     /**
      * 归一化质量等级，非 {@code null}，默认 {@link Quality#UNKNOWN}。
@@ -88,6 +90,7 @@ public final class Sample {
      */
     private Sample(Instant timestamp, ValueType valueType, Object value,
                    Quality quality, Integer vendorQualityCode) {
+
         this(timestamp, Date.from(timestamp), timestamp.toString(),
                 valueType, value, quality, vendorQualityCode);
     }
@@ -124,10 +127,11 @@ public final class Sample {
      *                          （归一化为 {@link Quality#UNKNOWN}）
      * @param vendorQualityCode 厂商原始质量码，允许为 {@code null}
      * @return 非 {@code null} 的采样点，{@link #getValueType()} 为
-     *         {@link ValueType#DOUBLE}
+     * {@link ValueType#DOUBLE}
      * @throws NullPointerException 当 {@code timestamp} 为 {@code null} 时
      */
     public static Sample ofDouble(Instant timestamp, double value, Quality quality, Integer vendorQualityCode) {
+        if (timestamp == null) timestamp = Instant.now();
         return new Sample(timestamp, ValueType.DOUBLE, value, quality, vendorQualityCode);
     }
 
@@ -140,10 +144,11 @@ public final class Sample {
      *                          （归一化为 {@link Quality#UNKNOWN}）
      * @param vendorQualityCode 厂商原始质量码，允许为 {@code null}
      * @return 非 {@code null} 的采样点，{@link #getValueType()} 为
-     *         {@link ValueType#LONG}
+     * {@link ValueType#LONG}
      * @throws NullPointerException 当 {@code timestamp} 为 {@code null} 时
      */
     public static Sample ofLong(Instant timestamp, long value, Quality quality, Integer vendorQualityCode) {
+        if (timestamp == null) timestamp = Instant.now();
         return new Sample(timestamp, ValueType.LONG, value, quality, vendorQualityCode);
     }
 
@@ -156,10 +161,11 @@ public final class Sample {
      *                          （归一化为 {@link Quality#UNKNOWN}）
      * @param vendorQualityCode 厂商原始质量码，允许为 {@code null}
      * @return 非 {@code null} 的采样点，{@link #getValueType()} 为
-     *         {@link ValueType#BOOLEAN}
+     * {@link ValueType#BOOLEAN}
      * @throws NullPointerException 当 {@code timestamp} 为 {@code null} 时
      */
     public static Sample ofBoolean(Instant timestamp, boolean value, Quality quality, Integer vendorQualityCode) {
+        if (timestamp == null) timestamp = Instant.now();
         return new Sample(timestamp, ValueType.BOOLEAN, value, quality, vendorQualityCode);
     }
 
@@ -174,10 +180,11 @@ public final class Sample {
      *                          （归一化为 {@link Quality#UNKNOWN}）
      * @param vendorQualityCode 厂商原始质量码，允许为 {@code null}
      * @return 非 {@code null} 的采样点，{@link #getValueType()} 为
-     *         {@link ValueType#STRING}
+     * {@link ValueType#STRING}
      * @throws NullPointerException 当 {@code timestamp} 为 {@code null} 时
      */
     public static Sample ofString(Instant timestamp, String value, Quality quality, Integer vendorQualityCode) {
+        if (timestamp == null) timestamp = Instant.now();
         return new Sample(timestamp, ValueType.STRING, value, quality, vendorQualityCode);
     }
 
@@ -192,10 +199,11 @@ public final class Sample {
      *                          （归一化为 {@link Quality#UNKNOWN}）
      * @param vendorQualityCode 厂商原始质量码，允许为 {@code null}
      * @return 非 {@code null} 的采样点，{@link #getValueType()} 为
-     *         {@link ValueType#BYTES}
+     * {@link ValueType#BYTES}
      * @throws NullPointerException 当 {@code timestamp} 为 {@code null} 时
      */
     public static Sample ofBytes(Instant timestamp, byte[] value, Quality quality, Integer vendorQualityCode) {
+        if (timestamp == null) timestamp = Instant.now();
         return new Sample(timestamp, ValueType.BYTES,
                 value == null ? null : Arrays.copyOf(value, value.length), quality, vendorQualityCode);
     }
@@ -218,6 +226,7 @@ public final class Sample {
      *                              为 {@code null} 时
      */
     public static Sample ofNull(Instant timestamp, ValueType valueType, Quality quality, Integer vendorQualityCode) {
+        if (timestamp == null) timestamp = Instant.now();
         return new Sample(timestamp, valueType, null, quality, vendorQualityCode);
     }
 
@@ -309,7 +318,7 @@ public final class Sample {
      * @return 双精度值，或 {@code null}
      */
     public Double getDoubleValue() {
-        return value instanceof Double ? (Double) value : null;
+        return Convert.toDouble(value);
     }
 
     /**
@@ -322,7 +331,7 @@ public final class Sample {
      * @return 长整数值，或 {@code null}
      */
     public Long getLongValue() {
-        return value instanceof Long ? (Long) value : null;
+        return Convert.toLong(value);
     }
 
     /**
@@ -331,7 +340,7 @@ public final class Sample {
      * @return 布尔值；类型不匹配或值为空时返回 {@code null}
      */
     public Boolean getBooleanValue() {
-        return value instanceof Boolean ? (Boolean) value : null;
+        return Convert.toBool(value);
     }
 
     /**
@@ -340,7 +349,7 @@ public final class Sample {
      * @return 文本值；类型不匹配或值为空时返回 {@code null}
      */
     public String getTextValue() {
-        return value instanceof String ? (String) value : null;
+        return Convert.toStr(value);
     }
 
     /**
@@ -400,5 +409,18 @@ public final class Sample {
     @Override
     public String toString() {
         return "Sample{" + timestamp + ", " + valueType + ", " + value + ", " + quality + '}';
+    }
+
+    /**
+     * 设置采样值。
+     *
+     * <p>直接替换内部值引用，不改动 {@link #getValueType()}；调用方应确保
+     * 传入值的类型与点的类型一致。传入 {@code byte[]} 时保存的是引用本身，
+     * 而非副本（读取时由 {@link #getValue()} 返回副本）。</p>
+     *
+     * @param value 采样值，可为 {@code null}（表示该点无有效值）
+     */
+    public void setValue(Object value) {
+        this.value = value;
     }
 }

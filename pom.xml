@@ -45,7 +45,7 @@
     </modules>
 
     <properties>
-        <revision>0.1.0</revision>   <!-- 以后升版本只改这一行 -->
+        <revision>0.1.2</revision>   <!-- 以后升版本只改这一行 -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.release>17</maven.compiler.release>
