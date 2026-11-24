@@ -28,6 +28,7 @@ application-local.yml
 ge-it.properties
 hls-it.properties
 iotdb-it.properties
+pspace-it.properties
 MEMORY.md
 README.md.bak
 docs/apidocs

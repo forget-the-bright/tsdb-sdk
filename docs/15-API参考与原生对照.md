@@ -3,6 +3,8 @@
 > 版本：2026-11-17 · 适用 `tsdb-sdk` 0.1.0
 > 本文是 [README](../README.md) 第 6.5 节「公共方法 → 原生对照」的展开版。
 > 每个公共方法都标注三库各自落到哪条厂商端点或哪条 SQL；每个原生门面逐方法列出端点。
+> 力控 pSpace 的 23 个 REST 端点 + WebSocket 订阅单独写在
+> [docs/16](16-pSpace接入与验证.md)，本文尚未逐方法展开 pSpace。
 > 所有签名、端点号、SQL 形态、白名单均从源码核对，出处以 `文件名:行号` 给出。
 
 ---
@@ -1107,7 +1109,8 @@ mvn -o -pl tsdb-sdk-iotdb -am test \
 | **GE ↔ IoTDB 业务级对数** | **未执行** | 同库三档双跑（`IotdbTierParityIT` 七族 `diffs=0`）只证明 IoTDB 自己跟自己一致，**不证明 GE 与 IoTDB 的业务数值一致**。这是迁移的硬门槛，未完成前不得宣称「可替换」 |
 | 重试重放 / 熔断 / 信号量隔离 / 降级缓存 | **未实现** | `retry.max-attempts`/`backoff-ms` 是配置项，不要据此宣称有完整弹性能力 |
 | Actuator `/actuator/health/tsdb` | **未实现** | starter 只注册 `TsdbManager` bean |
-| 力控 pSpace 驱动 | **未实现** | 没有空壳驱动；Java 包名/Maven 坐标/JDBC URL/REST 路径与鉴权细节尚未拿到 |
+| 力控 pSpace 聚合数值与趋势客户端一致性 | **未执行** | 7.1 有数据桶返回 `pv`，AVG/`endval`/差分已与同窗口原始点对数；与趋势客户端对照待现场，见 [docs/16 §9.4](16-pSpace接入与验证.md) |
+| 力控 pSpace 写入落历史 / `/AddPoint` / `/DelPoint` | **未执行** | 环境已有点位，按约定不造数；写 IT 自动跳过 |
 | `FillPolicy.ZERO` | **未实现** | IoTDB 上抛 `TsdbUnsupportedException` |
 | 中央仓库**发布动作** | **未执行** | 根 pom 的 `url`/`scm`/`developers`/`distributionManagement`（Sonatype s01，`id=central`）与 `release` profile（`central-publishing-maven-plugin` 0.4.0 + gpg + sources/javadoc jar）**均已就绪**；未跑 `mvn -Prelease deploy`，当前需本地 `install` 或私服 |
 

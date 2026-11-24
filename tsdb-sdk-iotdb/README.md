@@ -355,7 +355,7 @@ security:
 mvn -o test
 ```
 
-L1 离线单测：reactor 290 个（common 77、hls 20、ge 28、spring-boot-starter 1、**iotdb 164**）。
+L1 离线单测：reactor 363 个（common 82、hls 20、ge 28、pspace 68、spring-boot-starter 1、**iotdb 164**）。
 本模块 164 个的分解：`IotdbQueryServiceTest` 39、`IotdbClientTest` 32、`IotdbSqlTest` 23、
 `IotdbTagPathTest` 24、`IotdbTagResolverTest` 17、`GroupingTest` 9、`IotdbConfigTest` 8、
 `IotdbRestQueryExecutorTest` 6、`SeriesKeyIndexTest` 6。

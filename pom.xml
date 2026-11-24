@@ -41,6 +41,7 @@
         <module>tsdb-sdk-hls</module>
         <module>tsdb-sdk-ge</module>
         <module>tsdb-sdk-iotdb</module>
+        <module>tsdb-sdk-pspace</module>
         <module>tsdb-sdk-spring-boot-starter</module>
     </modules>
 

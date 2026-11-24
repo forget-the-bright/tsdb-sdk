@@ -581,6 +581,7 @@ class IotdbClientTest {
                             .range(Instant.ofEpochMilli(1700000000000L),
                                     Instant.ofEpochMilli(1700000600000L))
                             .mode(QueryMode.RAW)
+                            .partialResultAllowed(false)
                             .build()));
         } finally {
             serviceClient.close();

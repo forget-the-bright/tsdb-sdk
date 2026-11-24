@@ -39,7 +39,7 @@ public interface TsdbClient extends AutoCloseable {
     /** 配置中的实例名，如 hls_main */
     String instanceName();
 
-    /** 驱动类型，如 hls / ge / forcecontrol / iotdb */
+    /** 驱动类型，如 hls / ge / pspace / iotdb */
     String type();
 
     /** 当前能力快照 */
@@ -427,23 +427,23 @@ public final class CapabilitySet {
 
 **驱动声明（v1.0）**：
 
-| Capability | HLS | GE | 力控（待 POC） | IoTDB（三通道） |
+| Capability | HLS | GE | pSpace（7.1 实测） | IoTDB（三通道） |
 |---|---|---|---|---|
-| TAG_BROWSE | ✅ | ✅ | ❓ | ✅ |
-| TAG_SEARCH | ❌ | ✅ | ❓ | ✅ |
-| TAG_CRUD | ❌ | ✅（原生） | ❓ | ❌ |
-| CURRENT_VALUE | ✅ | ✅ | ❓ | ✅ |
-| RAW_HISTORY | ✅ 1 秒 `BOUND` 桶近似（带 `rawSource` 标注） | ✅ | ❓ | ✅ |
-| AGGREGATED_HISTORY | ✅ | ✅ | ❓ | ✅ |
-| INTERPOLATED_HISTORY | ❌ | ✅ | ❓ | ✅ 驱动内存网格，不外推 |
-| SAMPLED_HISTORY | ✅ `BOUND` 列充当桶边界值 | ✅ `calculated LastRawValue` | ❓ | ✅ 任意间隔（服务端 GROUP BY 上限 10000 行） |
-| TREND | ❌ | ❌（原生可调） | ❓ | ❌ |
-| CUMULATIVE_DELTA | ✅ 基于 `BOUND`（生产同款迂回方案） | ✅ | ❓ | ✅ |
-| WRITE | ❌ | ❌（原生可调） | ❓ | 🟡 默认关闭 |
-| DELETE | ❌ | ✅（原生） | ❓ | ❌ |
-| ALARM | ❌ | ✅（原生） | ❓ | ❌ |
-| SUBSCRIPTION | ❌ | ❌ | ❓ | ❌ |
-| SYSTEM_ADMIN | ❌ | ✅（原生） | ❓ | ❌ |
+| TAG_BROWSE | ✅ | ✅ | ✅ `/PointPage` 翻页 | ✅ |
+| TAG_SEARCH | ❌ | ✅ | ✅ `/PointFilter`（服务端正则） | ✅ |
+| TAG_CRUD | ❌ | ✅（原生） | ❌（原生 `/AddPoint`、`/UpdPoint`、`/DelPoint` 可调） | ❌ |
+| CURRENT_VALUE | ✅ | ✅ | ✅ `/RealData` | ✅ |
+| RAW_HISTORY | ✅ 1 秒 `BOUND` 桶近似（带 `rawSource` 标注） | ✅ | ✅ `/HistDataPage` | ✅ |
+| AGGREGATED_HISTORY | ✅ | ✅ | ✅ `/HistAggreDataPage`（间隔单位秒） | ✅ |
+| INTERPOLATED_HISTORY | ❌ | ✅ | ✅ `intve`（数字量点位可能无数据） | ✅ 驱动内存网格，不外推 |
+| SAMPLED_HISTORY | ✅ `BOUND` 列充当桶边界值 | ✅ `calculated LastRawValue` | ✅ `orgintve` | ✅ 任意间隔（服务端 GROUP BY 上限 10000 行） |
+| TREND | ❌ | ❌（原生可调） | ❌ | ❌ |
+| CUMULATIVE_DELTA | ✅ 基于 `BOUND`（生产同款迂回方案） | ✅ | ✅ `endval` 基线折叠 | ✅ |
+| WRITE | ❌ | ❌（原生可调） | 🟡 默认关闭（`/UpdRealData`） | 🟡 默认关闭 |
+| DELETE | ❌ | ✅（原生） | ❌（原生 `/DelPoint`） | ❌ |
+| ALARM | ❌ | ✅（原生） | ❌（原生读/确认可调） | ❌ |
+| SUBSCRIPTION | ❌ | ❌ | ❌（原生 8081 WebSocket） | ❌ |
+| SYSTEM_ADMIN | ❌ | ✅（原生） | ❌ | ❌ |
 
 > HLS 没有原生原始点与 `LAST`，`RAW`/`SAMPLED`/差分/`INTERVAL_SUM` 统一基于厂商的
 > `TagValue_Bound` 列：`RAW` 用 1 秒 `BOUND` 桶近似（属性 `rawSource=hls_history_1s_bound`），
@@ -1025,6 +1025,7 @@ TsdbClient client = manager.defaultClient(); // 业务代码不变
 | IoTDB 通道与原生 REST | `iotdb.internal.IotdbRestApi` / `IotdbHttpClient` / `IotdbResultTable` / `IotdbQueryExecutor` / `IotdbNativeQueryExecutor` / `IotdbJdbcQueryExecutor` / `IotdbRestQueryExecutor` | `iotdb.internal.transport.*` | `unwrap(IotdbRestApi.class)` 同上，只改 import |
 | IoTDB 厂商 DTO | `iotdb.internal.IotdbModels` | **不变** | 跨子包共享，刻意留在 `internal` 根包 |
 | 装配层下沉（18 个类） | `ge.GeSupport` / `Ge*Adapter`（5）、`hls.HlsSupport` / `Hls*Adapter`（6）、`iotdb.IotdbSupport` / `IotdbSeriesAssembler` / `Iotdb*Adapter`（7） | `<vendor>.internal.adapter.*` | **非公共 API，仅可见性放宽**：18 个类名 + 18 个构造器改 `public`（门户需跨包构造），另加 `GeSupport.unsupported`、`HlsSupport.ensureOpen` 两个方法；`Support` 其余访问器与 `IotdbSeriesAssembler` 的方法**仍 package-private**。这些类从来不是承诺契约，宿主不应直接依赖 |
+| pSpace 装配层（6 个类，新增模块） | `pspace.PspaceSupport` / `Pspace*Adapter`（5） | `pspace.internal.adapter.*` | 新模块按本规范直接落位，`public final` + 「非公共 API」标注；不计入上表 18 类的历史 `javap` 测量 |
 | 测试包路径 | `iotdb.internal.IotdbSqlTest` 等 7 个测试类 | 镜像到 `internal/sql`、`internal/query`、`internal/transport`；`common.internal` 的 4 个测试镜像到 `http`/`json` | 只影响按包名筛选测试的命令（`-Dtest=` 用简单类名不受影响） |
 
 新增 12 个 `package-info.java`（全仓 25 个），每个包写明职责、可见性契约与「改什么找哪个类」；

@@ -118,11 +118,26 @@ tsdb:
             target-zone: GMT+8
             pattern: "yyyy-MM-dd HH:mm:ss"
 
-    # 力控 pSpace：待现场确认 Java API / REST / JDBC 细节后启用。
-    # forcecontrol_main:
-    #   type: forcecontrol
-    #   protocol: rest
-    #   base-url: http://10.20.1.10:8080
-    #   auth:
-    #     username: ${FC_USER}
-    #     password: ${FC_PASSWORD}
+    # 力控 pSpace Web API（7.1 实测）。REST 无客户端鉴权，账号在服务端 ini；
+    # 配置 auth 会校验失败。读接口实际要求 POST + JSON（驱动已内建）。
+    pspace_main:
+      type: pspace
+      # 模拟/联调环境是明文 http，需把 security.allow-insecure-transport 设为 true。
+      base-url: http://172.16.176.14:8080
+      timeout:
+        connect-ms: 5000
+        read-ms: 30000
+      options:
+        pspace:
+          charset: gbk                    # 现场实际按 GBK 收发；可选 utf-8
+          page-size: 1000                 # 分页读取每页条数（翻页按服务端 page.count 结束）
+          auto-refresh: true              # 目录/实时值首次为空或缓存未热时，自动 POST /Refresh 后重试一次
+          refresh-min-interval-ms: 1000   # 两次自动刷新最小间隔，避免刷新风暴
+          archived: 0                     # 只接受 0；1（zlib）本期未实现，配置即启动失败
+        time:
+          request:
+            pattern: "yyyy-MM-dd HH:mm:ss.SSS"
+            zone: GMT+8
+          response:
+            source-zone: GMT+8
+            pattern: "yyyy-MM-dd HH:mm:ss.SSS"

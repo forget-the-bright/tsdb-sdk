@@ -1,10 +1,10 @@
 # tsdb-sdk —— 工业时序数据库统一 SDK
 
-一套 Java API 统一访问 **和利时 HLS**、**GE Proficy Historian**、**Apache IoTDB**；
-换底层数据库时通用查询代码不改，厂商特有能力通过原生逃生口完整保留。
-默认**只读**：写入只有 IoTDB 在显式开启 `allow-write: true` 后才在公共层可用。
+一套 Java API 统一访问 **和利时 HLS**、**GE Proficy Historian**、**Apache IoTDB**、
+**力控 pSpace**；换底层数据库时通用查询代码不改，厂商特有能力通过原生逃生口完整保留。
+默认**只读**：写入只有 IoTDB 与 pSpace 在显式开启 `allow-write: true` 后才在公共层可用。
 
-`Java 17+` · `Maven 多模块` · `Spring Boot 2.7 自动装配（可选）` · `Apache-2.0` · `离线单测 290 项全绿`
+`Java 17+` · `Maven 多模块` · `Spring Boot 2.7 自动装配（可选）` · `Apache-2.0` · `离线单测 363 项全绿`
 
 **怎么读这份文档**
 
@@ -23,7 +23,7 @@
 
 ### 1.1 概述
 
-`tsdb-sdk` 把三套风格完全不同的工业时序库收敛成一组公共接口：标签目录、当前值、历史查询、
+`tsdb-sdk` 把四套风格完全不同的工业时序库收敛成一组公共接口：标签目录、当前值、历史查询、
 累计量差分、写入、探活。业务代码只依赖 `TsdbClient` 与公共数据模型，换库时**通用查询部分**改配置即可；
 质量码、时间语义、聚合白名单等不可消除的差异必须改业务，分界清单见 [§5.5](#55-换库时会变什么) 与 [§7.4](#74-不可消除的差异需业务签字不用容差掩盖)。
 
@@ -34,21 +34,23 @@
 适合两类使用者：
 
 - **初学者**：照着第 2–4 章就能在自己的项目里跑通第一次查询；
-- **需要切换底层数据库的人**：第 5–7 章给出三库的底层差异、能力矩阵与迁移门槛，
+- **需要切换底层数据库的人**：第 5–7 章给出三套既有库的底层差异、能力矩阵与迁移门槛
+  （pSpace 的协议事实与验证单独见 [docs/16](docs/16-pSpace接入与验证.md)），
   哪些是「改配置就行」、哪些是「必须改业务」写得很清楚。
 
 ### 1.2 主要功能
 
 1. **统一公共 API**：`TagCatalog` / `CurrentValueReader` / `HistoryReader` / `DeltaReader` /
-   `WriteSession` / `HealthCheck` 六个能力接口，三库共用同一套方法签名与数据模型。
-2. **一库一驱动，按需引入**：`tsdb-sdk-hls`、`tsdb-sdk-ge`、`tsdb-sdk-iotdb` 各自独立，
-   通过 `ServiceLoader` SPI 自动发现；只用一个库时不必引入另外两个。
+   `WriteSession` / `HealthCheck` 六个能力接口，四个驱动共用同一套方法签名与数据模型。
+2. **一库一驱动，按需引入**：`tsdb-sdk-hls`、`tsdb-sdk-ge`、`tsdb-sdk-iotdb`、`tsdb-sdk-pspace`
+   各自独立，通过 `ServiceLoader` SPI 自动发现；只用一个库时不必引入其它驱动。
 3. **能力协商，不静默降级**：`client.capabilities().supports(...)` 先判断，不支持的操作抛
    `TsdbUnsupportedException`（错误码 `TSDB-UNSUPPORTED`），**不会返回空结果冒充成功**。
 4. **单活动实例 + 运行期热切换**：`manager.switchTo(name)` 先建新客户端、成功后才关旧的；
    新连接失败时旧客户端仍可用，不会把应用切进一个连不上的库。
 5. **原生逃生口，能力不阉割**：`unwrap(HlsNativeApi.class)` / `unwrap(GeNativeApi.class)` /
-   `unwrap(IotdbRestApi.class)` / `unwrap(IotdbQueryService.class)`，与公共层共享同一份连接与认证。
+   `unwrap(IotdbRestApi.class)` / `unwrap(IotdbQueryService.class)` / `unwrap(PspaceNativeApi.class)`，
+   与公共层共享同一份连接与认证。
 6. **统一质量码与时间模型**：质量码归一到 `GOOD/UNCERTAIN/BAD/STALE/UNKNOWN` 并保留厂商原始码；
    时间统一 `Instant`（绝对时刻），另给 `timestampDate` 与 `timestampText` 两种便利形态。
 7. **IoTDB 三通道 + 批量查询**：REST v2 / Native SessionPool / JDBC 共用同一份 SQL；
@@ -74,11 +76,11 @@
 
 **优点**
 
-1. **可切换**：公共层语义在三库上一致，区间左闭右开、空集合返回空列表、缺失位号不伪造 0。
+1. **可切换**：公共层语义在各驱动上一致，区间左闭右开、空集合返回空列表、缺失位号不伪造 0。
 2. **不阉割**：原生层与公共层并列，不是「封装后只剩几个方法」。
 3. **失败响亮**：不支持就抛、配置写错就启动失败、映射表坏了就拒绝创建驱动，不做静默兜底。
-4. **可验证**：290 项离线单测 + 三库门控生产只读 IT + IoTDB 同库三档双跑对数（七族 `diffs=0`）。
-5. **中文文档齐全**：15 篇设计/使用文档 + 6 个模块 README + 中文 Javadoc（`docs/apidocs`）。
+4. **可验证**：363 项离线单测 + 各驱动门控只读 IT + IoTDB 同库三档双跑对数（七族 `diffs=0`）。
+5. **中文文档齐全**：16 篇设计/使用文档 + 7 个模块 README + 中文 Javadoc（`docs/apidocs`）。
 
 **取舍（明确不承诺的事）**
 
@@ -97,7 +99,7 @@
 | 和利时 HLS（HolliSys 实时/历史库） | `tsdb-sdk-hls` | ✅ 已实现，生产只读验证 |
 | GE Proficy Historian（REST API） | `tsdb-sdk-ge` | ✅ 已实现，生产只读验证 + 逐点对比 |
 | Apache IoTDB 1.x / 2.x（树模型） | `tsdb-sdk-iotdb` | ✅ 已实现，三通道生产只读验证 |
-| 力控 pSpace | — | ❌ **未实现，也没有空壳驱动**。Java 包名、Maven 坐标、JDBC 驱动类/URL、REST 路径与鉴权细节尚未拿到；接入步骤见 [docs/07](docs/07-新增驱动接入指南.md) |
+| 力控 pSpace（Web API / REST） | `tsdb-sdk-pspace` | ✅ 已实现，7.1 模拟环境只读验证；AVG/`endval`/差分已与同窗口原始点对数，写入落历史、建/删点**未执行**（环境已有点位），见 [docs/16](docs/16-pSpace接入与验证.md) |
 
 ---
 
@@ -108,12 +110,12 @@
 | 项 | 值 |
 |---|---|
 | `groupId` | `io.github.forget-the-bright` |
-| `version` | **`0.1.0`**（根 pom 与六个模块的 parent 引用一致） |
+| `version` | **`0.1.2`**（根 pom 与各模块的 parent 引用一致） |
 | Java 包根 | `io.github.forget_the_bright.tsdb`（注意：包名用**下划线**，坐标用**连字符**） |
-| 字节码基线 | Java 8（`maven.compiler.release=8`） |
+| 字节码基线 | Java 17（`maven.compiler.release=17`） |
 | 许可证 | Apache-2.0 |
 
-六个模块的 `artifactId`：
+七个模块的 `artifactId`：
 
 | artifactId | 用途 |
 |---|---|
@@ -122,9 +124,10 @@
 | `tsdb-sdk-hls` | 和利时 HLS 驱动 |
 | `tsdb-sdk-ge` | GE Proficy Historian 驱动 |
 | `tsdb-sdk-iotdb` | Apache IoTDB 驱动 |
+| `tsdb-sdk-pspace` | 力控 pSpace Web API 驱动 |
 | `tsdb-sdk-spring-boot-starter` | Spring Boot 自动装配 |
 
-> ⚠️ **`0.1.0` 尚未发布到 Maven 中央仓库。** 版本号已经是正式版号（不是 `SNAPSHOT`），
+> ⚠️ **`0.1.2` 尚未发布到 Maven 中央仓库。** 版本号已经是正式版号（不是 `SNAPSHOT`），
 > 但中央仓库里还没有这个坐标，现在直接写它去中央仓库拉会失败。当前请先本地安装或推私服：
 >
 > ```bash
@@ -147,7 +150,7 @@
     <dependency>
       <groupId>io.github.forget-the-bright</groupId>
       <artifactId>tsdb-sdk-bom</artifactId>
-      <version>0.1.0</version>
+      <version>0.1.2</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
@@ -168,7 +171,7 @@
 </dependencies>
 ```
 
-把 `tsdb-sdk-iotdb` 换成 `tsdb-sdk-ge` 或 `tsdb-sdk-hls` 即可。驱动 jar 里带
+把 `tsdb-sdk-iotdb` 换成 `tsdb-sdk-ge`、`tsdb-sdk-hls` 或 `tsdb-sdk-pspace` 即可。驱动 jar 里带
 `META-INF/services/io.github.forget_the_bright.tsdb.common.spi.TsdbDriver`，
 `TsdbManager.Builder.build()` 在没显式注册驱动时会自动 `discoverDrivers()`，无需手工装配。
 
@@ -178,14 +181,15 @@
 <dependency>
   <groupId>io.github.forget-the-bright</groupId>
   <artifactId>tsdb-sdk-spring-boot-starter</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 
 **实测依赖事实，引入前请知道**：
 
 - starter 对 `common` + `hls` + `ge` + `iotdb` 都是 **compile 依赖**，所以引一个 starter
-  会把**三个驱动全部带进来**；
+  会把**三个驱动全部带进来**；**pSpace 不在 starter 内**，用 pSpace 时需显式引
+  `tsdb-sdk-pspace`；
 - `tsdb-sdk-iotdb` 对 `iotdb-session` 2.0.11 与 `iotdb-jdbc` 2.0.11 也是 **compile（非 optional）**，
   即使你只用 REST 通道，这两个 jar 仍会进入 classpath；
 - `spring-boot-autoconfigure` 2.7.13 是 `optional`，由你的 Boot 版本提供。
@@ -202,12 +206,12 @@ starter 的装配机制是 `META-INF/spring.factories`（Spring Boot 2.7 风格�
 <dependency>
   <groupId>io.github.forget-the-bright</groupId>
   <artifactId>tsdb-sdk-common</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.2</version>
 </dependency>
 <dependency>
   <groupId>io.github.forget-the-bright</groupId>
   <artifactId>tsdb-sdk-ge</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 
@@ -243,7 +247,7 @@ mvn -o test
 
 ### 2.6 发布到中央仓库后会怎样
 
-坐标（`groupId` / `artifactId`）与版本号 `0.1.0` 都不变，只需删掉本地 install 步骤，
+坐标（`groupId` / `artifactId`）与版本号 `0.1.2` 都不变，只需删掉本地 install 步骤，
 让 Maven 直接从中央仓库解析。公共 API 与配置键不因发布而改变。
 
 ---
@@ -390,13 +394,37 @@ tsdb:
             source-zone: GMT+8
             target-zone: GMT+8
             pattern: "yyyy-MM-dd HH:mm:ss"
+
+    # ---------- 力控 pSpace（Web API） ----------
+    pspace_main:
+      type: pspace
+      # 联调机是明文 http，需 security.allow-insecure-transport: true；
+      # 生产应改为 TLS 代理。pSpace REST 无客户端鉴权，账号在服务端 ini。
+      base-url: http://pspace.example.com:8080
+      timeout:
+        connect-ms: 5000
+        read-ms: 30000
+      options:
+        pspace:
+          charset: gbk                  # gbk | utf-8；现场 7.1 实际按 GBK 收发
+          page-size: 1000               # 分页读取每页条数（翻页按服务端 page.count 结束）
+          auto-refresh: true            # 缓存未热时自动 POST /Refresh 后重试一次
+          refresh-min-interval-ms: 1000 # 两次自动刷新的最小间隔
+          archived: 0                   # 只接受 0；1（zlib）本期未实现，配置即失败
+        time:
+          request:
+            pattern: "yyyy-MM-dd HH:mm:ss.SSS"
+            zone: GMT+8
+          response:
+            source-zone: GMT+8
+            pattern: "yyyy-MM-dd HH:mm:ss.SSS"
 ```
 
 > `protocol` 是**描述性字段**：全仓只有 `TsdbInstanceConfig.getProtocol()` 这一个 getter，
 > 没有任何驱动读它。传输方式由 `base-url` 的 scheme 和 IoTDB 的 `options.transport` 决定，
 > **改 `protocol` 不会切换通道**。
 
-### 3.3 三库各自的关键 options
+### 3.3 各驱动关键 options
 
 **HLS**
 
@@ -413,7 +441,7 @@ tsdb:
 | `path-prefix` | `/historian-rest-api` | 配错则全部端点 404 |
 | `trust-all-certificates` | `false` | 自签名联调临时 `true`；生产应导入根证书并恢复校验 |
 | `token-expire-seconds` | `1800` | token 缓存有效期 |
-| `time.request.*` / `time.response.*` | 见 3.5 | **GE 是唯一实际消费文本时间的驱动**，配错直接导致时间错位 |
+| `time.request.*` / `time.response.*` | 见 3.5 | GE 与 pSpace 实际消费文本时间，配错直接导致时间错位 |
 
 **IoTDB**
 
@@ -442,6 +470,17 @@ tsdb:
 > 为什么不留别名：配置里还留着旧键，说明这份配置没被核对过；静默忽略就等于「上限还是旧的那个值」。
 > 宁可启动失败，也不让一个没生效的配置悄悄跑起来。
 
+**pSpace**
+
+| 键 | 默认 | 含义 / 配错后果 |
+|---|---|---|
+| `pspace.charset` | `gbk` | `gbk`/`utf-8`；请求体、响应、JSON 字段同一种编码。现场 7.1 实测按 GBK 收发 |
+| `pspace.page-size` | `1000` | 目录/历史翻页每页条数；按服务端 `page.count` 结束翻页，不设人为页数上限 |
+| `pspace.auto-refresh` | `true` | 缓存未热（空目录 / `Not find children` / `No Valid Data`）时 POST `/Refresh` 后重试一次 |
+| `pspace.refresh-min-interval-ms` | `1000` | 两次自动刷新的最小间隔，避免刷新风暴 |
+| `pspace.archived` | `0` | 只接受 0；`1`（zlib）本期未实现，配置即校验失败 |
+| `time.request.*` / `time.response.*` | 见 3.5 | pSpace 请求与响应都是文本时间，配错导致时间错位；`24:00:00` 按次日 00:00 解析 |
+
 ### 3.4 环境变量占位符
 
 `TsdbConfigLoader` 支持 `${ENV}` 与 `${ENV:default}`，在**解析期**替换：
@@ -453,15 +492,16 @@ auth:
 ```
 
 凭据一律外置。生产只读测试的凭据放 `ge-it.properties` / `hls-it.properties` /
-`iotdb-it.properties`，这三个文件与 `tsdb.yml`、`application-local.yml` 都被 `.gitignore` 排除。
+`iotdb-it.properties` / `pspace-it.properties`，这些文件与 `tsdb.yml`、`application-local.yml`
+都被 `.gitignore` 排除。
 
 ### 3.5 时间配置三层（最容易配错的地方）
 
-| 层 | 键 | 管什么 | 三库实际情况 |
+| 层 | 键 | 管什么 | 各驱动实际情况 |
 |---|---|---|---|
-| ① 协议时间 | 无（驱动内部） | 厂商线缆上的时间表示 | HLS = epoch **秒**；GE = **时间字符串**；IoTDB = epoch **毫秒** |
+| ① 协议时间 | 无（驱动内部） | 厂商线缆上的时间表示 | HLS = epoch **秒**；GE = **时间字符串**；IoTDB = epoch **毫秒**；pSpace = **时间字符串**（`24:00:00` 存在） |
 | ② 业务日历 | `options.zone` + `options.shift-hour` | 自然日/月分桶边界、班次窗口 | **仅 IoTDB 消费** |
-| ③ 文本解析与展示 | `options.time.request.*` / `options.time.response.*` | 请求文本格式化、响应文本解析、`timestampText` 展示 | 请求侧**只有 GE 实际消费**；展示侧三库都生效 |
+| ③ 文本解析与展示 | `options.time.request.*` / `options.time.response.*` | 请求文本格式化、响应文本解析、`timestampText` 展示 | 请求侧 **GE 与 pSpace 实际消费**；展示侧各驱动都生效 |
 
 三层互不影响。把 `zone` 与 `time.response.target-zone` 配成同一个时区**不是必选项**。
 
@@ -911,25 +951,25 @@ try {
 图例：✅ 公共层声明并实现；🟡 有条件；❌ 公共层未声明（调用抛 `TsdbUnsupportedException`）。
 **❌ 不代表厂商没有该能力**——原生层可能仍可调，见 [docs/15](docs/15-API参考与原生对照.md)。
 
-### 6.1 15 项 Capability × 3 库
+### 6.1 15 项 Capability × 4 库
 
-| Capability | HLS | GE | IoTDB |
-|---|---|---|---|
-| `TAG_BROWSE` | ✅ | ✅ | ✅ |
-| `TAG_SEARCH` | ❌ | ❌ | ❌ |
-| `TAG_CRUD` | ❌ | ❌ | ❌ |
-| `CURRENT_VALUE` | ✅ | ✅ | ✅ |
-| `RAW_HISTORY` | ✅ ⑥ | ✅ | ✅ |
-| `AGGREGATED_HISTORY` | ✅ | ✅ | ✅ |
-| `INTERPOLATED_HISTORY` | ❌ | ✅ | 🟡 ① |
-| `SAMPLED_HISTORY` | ✅ | ✅ | 🟡 ① |
-| `TREND` | ❌ | ❌ | ❌ |
-| `CUMULATIVE_DELTA` | ✅ ② | ✅ | 🟡 ① |
-| `WRITE` | ❌ | ❌ ③ | 🟡 ④ |
-| `DELETE` | ❌ | ❌ | ❌ |
-| `ALARM` | ❌ | ❌ ⑤ | ❌ |
-| `SUBSCRIPTION` | ❌ | ❌ | ❌ |
-| `SYSTEM_ADMIN` | ❌ | ❌ ⑤ | ❌ |
+| Capability | HLS | GE | IoTDB | pSpace |
+|---|---|---|---|---|
+| `TAG_BROWSE` | ✅ | ✅ | ✅ | ✅ |
+| `TAG_SEARCH` | ❌ | ❌ | ❌ | ✅ `/PointFilter` |
+| `TAG_CRUD` | ❌ | ❌ | ❌ | ❌ 原生可调 |
+| `CURRENT_VALUE` | ✅ | ✅ | ✅ | ✅ |
+| `RAW_HISTORY` | ✅ ⑥ | ✅ | ✅ | ✅ ⑦ |
+| `AGGREGATED_HISTORY` | ✅ | ✅ | ✅ | ✅ |
+| `INTERPOLATED_HISTORY` | ❌ | ✅ | 🟡 ① | ✅ `intve`（数字量点可能为空） |
+| `SAMPLED_HISTORY` | ✅ | ✅ | 🟡 ① | ✅ `orgintve` |
+| `TREND` | ❌ | ❌ | ❌ | ❌ |
+| `CUMULATIVE_DELTA` | ✅ ② | ✅ | 🟡 ① | ✅ `endval` 基线折叠 |
+| `WRITE` | ❌ | ❌ ③ | 🟡 ④ | 🟡 `allow-write` |
+| `DELETE` | ❌ | ❌ | ❌ | ❌ 原生可调 |
+| `ALARM` | ❌ | ❌ ⑤ | ❌ | ❌ 原生可调 |
+| `SUBSCRIPTION` | ❌ | ❌ | ❌ | ❌ 原生 WebSocket |
+| `SYSTEM_ADMIN` | ❌ | ❌ ⑤ | ❌ | ❌ 原生可调 |
 
 脚注：
 
@@ -942,63 +982,73 @@ try {
 - **③** GE 公共层**未声明 `WRITE`**，但原生 `GeNativeApi.write(...)` → `POST /v1/datapoints/create` 可用。
 - **④** IoTDB 只有 `allow-write: true` 才声明 `WRITE`。
 - **⑤** GE 原生层有 5 个告警端点、25 个系统端点、27 个采集器端点，公共层不声明。
+- **⑥** HLS 没有原生原始点接口，`RAW` 用 1 秒 `BOUND` 桶近似，结果带 `rawApproximate=true`。
+- **⑦** pSpace 的 `RAW` 走 `/HistDataPage`，是协议级原始点；7.1 模拟环境 24h 实测返回
+  `pv` 与 `qy=192`，聚合的**有数据桶**也返回 `pv`（仅空桶无 `pv`）；AVG/`endval`/差分
+  已用同窗口原始点对数，写入链路**未执行**，见 [docs/16 §9](docs/16-pSpace接入与验证.md)。
 
-出处：`HlsClient.java:61-67`、`GeClient.java:61-67`、`IotdbClient.java:165-177`。
+出处：`HlsClient.java:61-67`、`GeClient.java:61-67`、`IotdbClient.java:165-177`、
+`PspaceClient.java:133`。
 
-### 6.2 QueryMode × 3 库
+### 6.2 QueryMode × 4 库
 
-| QueryMode | HLS | GE | IoTDB |
-|---|---|---|---|
-| `RAW` | ✅ 1 秒 `BOUND` 桶近似（仅 `FORWARD`） | ✅ `POST /v1/datapoints/raw` | ✅ 多列 `SELECT … ORDER BY TIME LIMIT` + 补采 |
-| `AGGREGATED` | ✅ `POST /hdb/read_hdbtagvalue` | ✅ `POST /v1/datapoints/calculated` | ✅ 多列 `GROUP BY ([s,e),<lit>)` |
-| `INTERPOLATED` | ❌ | ✅ `POST /v1/datapoints/interpolated` | ✅ SDK 内存网格 + 线性内插（不外推） |
-| `SAMPLED` | ✅ 用 `BOUND` 当桶边界值 | ✅ `POST /v1/datapoints/sampled`（`samplingMode=2`） | ✅ 多列 `GROUP BY` + `LAST_VALUE` |
-| `TREND` | ❌ | ❌ | ❌ |
+| QueryMode | HLS | GE | IoTDB | pSpace |
+|---|---|---|---|---|
+| `RAW` | ✅ 1 秒 `BOUND` 桶近似（仅 `FORWARD`） | ✅ `POST /v1/datapoints/raw` | ✅ 多列 `SELECT … ORDER BY TIME LIMIT` + 补采 | ✅ `POST /HistDataPage` |
+| `AGGREGATED` | ✅ `POST /hdb/read_hdbtagvalue` | ✅ `POST /v1/datapoints/calculated` | ✅ 多列 `GROUP BY ([s,e),<lit>)` | ✅ `POST /HistAggreDataPage` |
+| `INTERPOLATED` | ❌ | ✅ `POST /v1/datapoints/interpolated` | ✅ SDK 内存网格 + 线性内插（不外推） | ✅ `aggfunc=intve` |
+| `SAMPLED` | ✅ 用 `BOUND` 当桶边界值 | ✅ `POST /v1/datapoints/sampled`（`samplingMode=2`） | ✅ 多列 `GROUP BY` + `LAST_VALUE` | ✅ `aggfunc=orgintve` |
+| `TREND` | ❌ | ❌ | ❌ | ❌ |
 
 > IoTDB 的 `SAMPLED` / `INTERPOLATED` 与 §6.1 脚注 ① 同条件：**必须装配了 `IotdbQueryService`**。
 > `queryService` 缺失时这两个模式不走采样/插值分支，而是落到 REST 兜底，且能力集不声明它们
-> （`IotdbHistoryAdapter.java:82-87`）。`TREND` 三库公共层都未实现，调用抛 `TsdbUnsupportedException`。
+> （`IotdbHistoryAdapter.java:82-87`）。`TREND` 四库公共层都未实现，调用抛 `TsdbUnsupportedException`。
 
-### 6.3 Aggregation × 3 库
+### 6.3 Aggregation × 4 库
 
-| Aggregation | HLS | GE（`calculationMode`） | IoTDB（SQL 函数） |
-|---|---|---|---|
-| `AVG` | ✅ | ✅ `1` | ✅ `AVG` |
-| `MIN` | ✅ | ✅ `4` | ✅ `MIN_VALUE` |
-| `MAX` | ✅ | ✅ `5` | ✅ `MAX_VALUE` |
-| `SUM` | ❌ | ✅ `9`（RawTotal，算术和） | ✅ `SUM` |
-| `COUNT` | ❌ | ✅ `6` | ✅ `COUNT` |
-| `FIRST` | ❌ | ✅ `17` | ✅ `FIRST_VALUE` |
-| `LAST` | ❌ | ✅ `19` | ✅ `LAST_VALUE` |
-| `RANGE` | ❌ | ❌ | ❌ |
-| `BOUND` | ✅ | ❌ | ❌ |
-| `INTERVAL_SUM` | ✅ 两侧 1 分钟 `BOUND` 探测，缺边不出点 | ✅ `17`/`19` **双请求** | ✅ `first_value`+`last_value` **单窗单 SQL** |
+| Aggregation | HLS | GE（`calculationMode`） | IoTDB（SQL 函数） | pSpace（`aggfunc`） |
+|---|---|---|---|---|
+| `AVG` | ✅ | ✅ `1` | ✅ `AVG` | ✅ `avg` |
+| `MIN` | ✅ | ✅ `4` | ✅ `MIN_VALUE` | ✅ `minim` |
+| `MAX` | ✅ | ✅ `5` | ✅ `MAX_VALUE` | ✅ `maxim` |
+| `SUM` | ❌ | ✅ `9`（RawTotal，算术和） | ✅ `SUM` | ✅ `total` |
+| `COUNT` | ❌ | ✅ `6` | ✅ `COUNT` | ✅ `count` |
+| `FIRST` | ❌ | ✅ `17` | ✅ `FIRST_VALUE` | ✅ `staval` |
+| `LAST` | ❌ | ✅ `19` | ✅ `LAST_VALUE` | ✅ `endval` |
+| `RANGE` | ❌ | ❌ | ❌ | ✅ `range` |
+| `BOUND` | ✅ | ❌ | ❌ | ✅ `intve` |
+| `INTERVAL_SUM` | ✅ 两侧 1 分钟 `BOUND` 探测，缺边不出点 | ✅ `17`/`19` **双请求** | ✅ `first_value`+`last_value` **单窗单 SQL** | ✅ `delta`（厂商函数；与折叠结果已对数） |
+
+> pSpace 的聚合**有数据桶**正常返回 `pv`，只有空桶返回 `tm`/`qy=0` 且无 `pv`。
+> AVG、`endval` 与 `delta` 已在 7.1 模拟环境的 10 分钟稠密窗口内与同桶原始点对数一致
+> （容差 1e-3）；空桶不进入样本列表，由 `valueMissing*` 属性诊断。
+> 与力控趋势客户端的一致性仍未验证，见 [docs/16 §9](docs/16-pSpace接入与验证.md)。
 
 ### 6.4 FillPolicy / 粒度 / 方向
 
-| 约束 | HLS | GE | IoTDB |
-|---|---|---|---|
-| history 填充 | **仅 `NONE`** | **仅 `NONE`** | 只有「`SAMPLED` 且装配了 queryService」能下推 `FILL`；其余路径非 `NONE` 一律抛；`ZERO` **未实现** |
-| history 方向 | **仅 `FORWARD`** | 支持 | 支持 |
-| history 间隔 | 必须 ≥ 1 秒 | `intervalMs` | 任意 `Duration`，字面量必须带单位 |
-| delta 粒度 | 不支持 `MONTH` | 不支持 `MONTH` | **支持 `MONTH`** |
-| delta 聚合 | 仅 `LAST` | 仅 `LAST` | `LAST` |
-| delta 填充 | `NONE`/`PREVIOUS` | **仅 `NONE`** | `NONE`/`PREVIOUS`/`LINEAR` |
+| 约束 | HLS | GE | IoTDB | pSpace |
+|---|---|---|---|---|
+| history 填充 | **仅 `NONE`** | **仅 `NONE`** | 只有「`SAMPLED` 且装配了 queryService」能下推 `FILL`；其余路径非 `NONE` 一律抛；`ZERO` **未实现** | **仅 `NONE`** |
+| history 方向 | **仅 `FORWARD`** | 支持 | 支持 | 支持（客户端排序） |
+| history 间隔 | 必须 ≥ 1 秒 | `intervalMs` | 任意 `Duration`，字面量必须带单位 | 必须为**整秒**（pSpace 无毫秒聚合） |
+| delta 粒度 | 不支持 `MONTH` | 不支持 `MONTH` | **支持 `MONTH`** | 不支持 `MONTH` |
+| delta 聚合 | 仅 `LAST` | 仅 `LAST` | `LAST` | 仅 `LAST` |
+| delta 填充 | `NONE`/`PREVIOUS` | **仅 `NONE`** | `NONE`/`PREVIOUS`/`LINEAR` | **仅 `NONE`** |
 
 ### 6.5 公共方法 → 原生对照（精简版）
 
-| 公共方法 | HLS | GE | IoTDB |
-|---|---|---|---|
-| `tagCatalog().listTags()` | `GET /ddb/read_alltagname`（全量，客户端裁剪） | `GET /v1/tags` | `SHOW TIMESERIES <prefix>` |
-| `tagCatalog().getTag()` | 全量目录线性扫描 | `GET /v1/tags`（名字当掩码，上限 1000） | `SHOW TIMESERIES <device>` |
-| `currentValues().read()` | `POST /ddb/read_ddbtagvalue` | `POST /v1/datapoints/sampled`（`samplingMode=1`） | `SELECT LAST E(p1), E(p2) … FROM <库>` |
-| `history()` RAW | `POST /hdb/read_hdbtagvalue`（`interval=1` + `NeedQueryBound=true`，1 秒桶近似） | `POST /v1/datapoints/raw` | 多列 raw + 逐位号补采 |
-| `history()` AGGREGATED | `POST /hdb/read_hdbtagvalue` | `POST /v1/datapoints/calculated` | 多列 `GROUP BY` |
-| `history()` SAMPLED | 同上（`NeedQueryBound=true`） | `POST /v1/datapoints/sampled`（`samplingMode=2`） | 多列 `GROUP BY` + `LAST_VALUE` |
-| `history()` INTERPOLATED | ❌ | `POST /v1/datapoints/interpolated` | 窗内 raw + 包围点 raw + 内存网格 |
-| `deltaHistory().read()` | `POST /hdb/read_hdbtagvalue`（BOUND） | `calculated`(19) + 批量 `raw` 基线 | 桶序列 + `LAST_VALUE WHERE time < start` |
-| `writeSession().write()` | ❌ | ❌ 公共层（原生 `POST /v1/datapoints/create`） | `POST /rest/v2/insertTablet` |
-| `health()` | `GET /ddb/read_alltagname` 或 token 刷新 | `GET /v1/tags?maxNumber=1` | `GET {base}/ping` 或 `SHOW VERSION` |
+| 公共方法 | HLS | GE | IoTDB | pSpace |
+|---|---|---|---|---|
+| `tagCatalog().listTags()` | `GET /ddb/read_alltagname`（全量，客户端裁剪） | `GET /v1/tags` | `SHOW TIMESERIES <prefix>` | `POST /PointPage` |
+| `tagCatalog().getTag()` | 全量目录线性扫描 | `GET /v1/tags`（名字当掩码，上限 1000） | `SHOW TIMESERIES <device>` | `POST /PointFilter`（`match` + 全等校验） |
+| `currentValues().read()` | `POST /ddb/read_ddbtagvalue` | `POST /v1/datapoints/sampled`（`samplingMode=1`） | `SELECT LAST E(p1), E(p2) … FROM <库>` | `POST /RealData` |
+| `history()` RAW | `POST /hdb/read_hdbtagvalue`（`interval=1` + `NeedQueryBound=true`，1 秒桶近似） | `POST /v1/datapoints/raw` | 多列 raw + 逐位号补采 | `POST /HistDataPage` |
+| `history()` AGGREGATED | `POST /hdb/read_hdbtagvalue` | `POST /v1/datapoints/calculated` | 多列 `GROUP BY` | `POST /HistAggreDataPage` |
+| `history()` SAMPLED | 同上（`NeedQueryBound=true`） | `POST /v1/datapoints/sampled`（`samplingMode=2`） | 多列 `GROUP BY` + `LAST_VALUE` | 同上 + `aggfunc=orgintve` |
+| `history()` INTERPOLATED | ❌ | `POST /v1/datapoints/interpolated` | 窗内 raw + 包围点 raw + 内存网格 | 同上 + `aggfunc=intve` |
+| `deltaHistory().read()` | `POST /hdb/read_hdbtagvalue`（BOUND） | `calculated`(19) + 批量 `raw` 基线 | 桶序列 + `LAST_VALUE WHERE time < start` | 桶序列 + 多取 1 桶 `endval` 基线 |
+| `writeSession().write()` | ❌ | ❌ 公共层（原生 `POST /v1/datapoints/create`） | `POST /rest/v2/insertTablet` | `PUT /UpdRealData`（`allow-write`） |
+| `health()` | `GET /ddb/read_alltagname` 或 token 刷新 | `GET /v1/tags?maxNumber=1` | `GET {base}/ping` 或 `SHOW VERSION` | `POST /ServerInfo` |
 
 **逐方法完整对照**（含每个原生门面的全部方法、92 个 GE 端点清单、7 族 IoTDB 批量原语的 SQL 形态与往返次数、
 配置键→生效位置）见 **[docs/15 · API 参考与原生对照](docs/15-API参考与原生对照.md)**。
@@ -1065,7 +1115,7 @@ AI-102 = root.factory.device01.flow
 
 ## 8. 项目模块与目录结构
 
-### 8.1 六个模块
+### 8.1 七个模块
 
 | 模块 | 职责 | 源文件数 |
 |---|---|---|
@@ -1074,9 +1124,10 @@ AI-102 = root.factory.device01.flow
 | `tsdb-sdk-hls` | HLS 驱动 + 原生门面 + 厂商 DTO | 22 |
 | `tsdb-sdk-ge` | GE 驱动 + 原生门面 + 92 端点枚举 | 18 |
 | `tsdb-sdk-iotdb` | IoTDB 驱动 + 三通道 + SQL 生成 + 批量查询编排 | 42 |
+| `tsdb-sdk-pspace` | pSpace 驱动 + 23 个 REST 端点 + WebSocket 订阅 + 自动刷新 | 19 |
 | `tsdb-sdk-spring-boot-starter` | 自动装配 + 配置绑定 | 3 |
 
-合计 **151 个 `.java` 文件 = 126 个类 + 25 个 `package-info.java`，25 个包**。
+合计 **173 个 `.java` 文件 = 145 个类 + 28 个 `package-info.java`，28 个包**。
 
 ### 8.2 目录结构（包级，括号内为文件数）
 
@@ -1115,6 +1166,12 @@ tsdb-sdk-iotdb/…/iotdb/
     └── adapter/    (8)  CurrentValue/History/Delta/TagCatalog/Write +
                          SeriesAssembler/Support
 
+tsdb-sdk-pspace/…/pspace/
+├── PspaceClient / PspaceConfig / PspaceDriver           (3)  公共入口
+├── internal/       (7)  PspaceNativeApi/PspaceResponseParser/PspaceHttp/PspaceModels/
+│                        PspaceMapper/PspaceTagResolver/PspaceSubscription
+└── internal/adapter/  (6)  CurrentValue/History/Delta/TagCatalog/Write + Support
+
 tsdb-sdk-spring-boot-starter/…/spring/                   (3)
 ├── TsdbAutoConfiguration / TsdbProperties / package-info
 └── resources/META-INF/spring.factories
@@ -1126,7 +1183,7 @@ tsdb-sdk-spring-boot-starter/…/spring/                   (3)
 
 | 包 | 承诺 |
 |---|---|
-| 根包（`common`、`hls`、`ge`、`iotdb`） | **只放公共入口**：`TsdbClients`/`TsdbManager`/`XxxClient`/`XxxConfig`/`XxxDriver` |
+| 根包（`common`、`hls`、`ge`、`iotdb`、`pspace`） | **只放公共入口**：`TsdbClients`/`TsdbManager`/`XxxClient`/`XxxConfig`/`XxxDriver` |
 | `common.api` / `model` / `config` / `exception` / `spi` | 公共 API，语义稳定 |
 | `*.internal.*` | 类是 `public`，但**非公共 API，不承诺兼容**；通过 `unwrap(...)` 使用 |
 | `*.internal.adapter` | **装配层**：把公共接口调用翻译成原生调用，public 但非公共 API |
@@ -1145,7 +1202,7 @@ tsdb-sdk-spring-boot-starter/…/spring/                   (3)
 | 算累计增量 | `DeltaReader`、`DeltaSeries`、`DeltaPoint`、`TimeGranularity` |
 | 判断能力 | `Capability`、`CapabilitySet` |
 | 处理错误 | `TsdbException`、`TsdbErrorCode` |
-| 调厂商原始接口 | `HlsNativeApi` / `GeNativeApi` + `GeEndpoint` / `IotdbRestApi` + `IotdbQueryService` |
+| 调厂商原始接口 | `HlsNativeApi` / `GeNativeApi` + `GeEndpoint` / `IotdbRestApi` + `IotdbQueryService` / `PspaceNativeApi` |
 | 配时间与时区 | `TimeConfig`、`IotdbConfig`（`zone`/`shift-hour`） |
 | 写新驱动 | `TsdbDriver`、`DriverContext`、[docs/07](docs/07-新增驱动接入指南.md) |
 
@@ -1159,17 +1216,18 @@ tsdb-sdk-spring-boot-starter/…/spring/                   (3)
 mvn -o test
 ```
 
-**290 项，0 failures / 0 errors / 0 skipped**（2026-11-19 09:58 实测，`BUILD SUCCESS`，
-统计口径为当次生成的 25 份 surefire XML）：
+**363 项，0 failures / 0 errors / 0 skipped**（2026-11-24 16:06 实测，`BUILD SUCCESS`，
+统计口径为当次生成的 surefire XML；`target/` 里的门控 IT 旧报告不计入）：
 
 | 模块 | 用例数 |
 |---|---|
-| `tsdb-sdk-common` | 77 |
+| `tsdb-sdk-common` | 82 |
 | `tsdb-sdk-hls` | 20 |
 | `tsdb-sdk-ge` | 28 |
 | `tsdb-sdk-iotdb` | 164 |
+| `tsdb-sdk-pspace` | 68 |
 | `tsdb-sdk-spring-boot-starter` | 1 |
-| **合计** | **290** |
+| **合计** | **363** |
 
 > 计数只认**当次生成**的 surefire XML（按 mtime 过滤），不做目录求和——`target/` 里会累积历史报告。
 
@@ -1182,8 +1240,11 @@ mvn -o test
 | GE | `-Dge.it=true` | **19**（Production 10 + Comparison 9） | 2026-11-19 09:50，`MATCH=2021 DIFF=0 OLD_ONLY=0 NEW_ONLY=0 PROBE=434`；Comparison 175.5 s、Production 3.1 s（surefire XML） |
 | HLS | `-Dhls.it=true` | **10**（9 默认 + 1 差分门控），10/10 全绿 | 2026-11-19 09:42，438 s；`RAW` 300 个 1 秒桶样本，1 小时 5 分钟差分 `points=12` |
 | IoTDB | `-Diotdb.it=true` | **45**（Production 11 + Mapping 3 + ContractProbe 24 + TierParity 7），45/45 全绿 | 2026-11-19 09:51，七族 `diffs=0`（delta buckets=42） |
+| pSpace | `-Dpspace.it=true`（写另加 `-Dpspace.it.allow-write=true`） | **8 只读 + 1 写门控** | 2026-11-24 14:10 只读 8/8 通过（35 点位、RAW 200 点；10 分钟稠密窗口 AVG 9 桶、差分 9/10 桶与原始点对数一致）；16:09 复跑 6 通过 + 2 跳过（近 3 小时无稠密采样，`Assumption` 如实跳过，非失败）；写 IT 因环境已有 35 个点位**跳过**，未造数 |
 
-> 表中三行都是 2026-11-19 本轮实跑记录：三库生产只读 IT 均已执行并通过（HLS 差分门控本轮显式打开）。
+> GE/HLS/IoTDB 三行都是 2026-11-19 实跑记录：三库生产只读 IT 均已执行并通过（HLS 差分门控显式打开）。
+> pSpace 行是 2026-11-24 对力控 7.1 模拟环境的记录，**不是生产环境**；聚合数值已与同窗口原始点自洽，
+> 与厂商趋势客户端的一致性、写入落历史仍未执行。
 > HLS 差分从 13 点变为 12 点不是回归：窗口是 1 小时、间隔 5 分钟，本应 12 个桶；
 > 旧实现多出的第 13 个点是 `limit + 1` 越界，本轮按 `maxPoints` 裁剪修正。
 > 差分基线已折进扩展桶：稠密网格每块 1 次请求，扩展桶为空才对缺桶位号补 1 条批量基线。
@@ -1200,6 +1261,9 @@ mvn -o -pl tsdb-sdk-hls -am test "-Dtest=HlsProductionIT" \
 mvn -o -pl tsdb-sdk-iotdb -am test \
   "-Dtest=IotdbProductionIT,IotdbMappingProductionIT,IotdbContractProbeIT,IotdbTierParityIT" \
   "-DfailIfNoTests=false" "-Diotdb.it=true"
+
+mvn -o -pl tsdb-sdk-pspace -am test \
+  "-Dtest=PspaceReadOnlyIT" "-DfailIfNoTests=false" "-Dpspace.it=true"
 ```
 
 注意事项：
@@ -1207,19 +1271,24 @@ mvn -o -pl tsdb-sdk-iotdb -am test \
 - `-pl` 必须带 `-am`，否则依赖模块不会先构建。
 - 跨模块只跑 IT 用 **`-DfailIfNoTests=false`**；`-Dsurefire.failIfNoSpecifiedTests=false`
   在本项目的 surefire 2.22.2 上**无效**。
-- 三个库的连接配置都从 `*-it.properties`（或同名系统属性/环境变量）读取，测试源码内没有硬编码地址或账号；
+- 各库的连接配置都从 `*-it.properties`（或同名系统属性/环境变量）读取，测试源码内没有硬编码地址或账号；
   IoTDB 本轮已统一到 `IotdbItConfig`，优先级为「系统属性 `iotdb.it.<key>` → 环境变量 `IOTDB_IT_<KEY>`
   → `iotdb-it.properties`」。
 - `IotdbProductionIT` 的默认位号随现场数据老化会变：默认库 `root.factory` 下的
   `device01.temperature` 近 7 天可能已无原始点，其 raw 断言会**环境性失败**；
   在 `iotdb-it.properties` 里把 `tag` 指到存活位号（本轮用 `root.factory.device02.temperature`）
   即可三通道全绿。这不是 SDK 回归。
-- 全部 IT 都是**只读**：不写、不删、不改配置、不启停采集器。
+- IT 默认路径**全部只读**：不写、不删、不改配置、不启停采集器。
+  pSpace 另有写/造数用例，必须再加 `-Dpspace.it.allow-write=true` 且主机在
+  {127.0.0.1, localhost, 172.16.176.14} 白名单内；**探测到现有点位就直接跳过，不建点**。
 
 ### 9.3 中文 Javadoc
 
 `docs/apidocs/index.html` —— 230 个文件 / 198 个 HTML / 25 个 package-summary
 （2026-11-19 差分折叠与 `count` 推导改动后重新生成，`scripts/gen-javadoc.ps1`）。
+
+> ⚠️ 这份静态 Javadoc **尚未包含 `tsdb-sdk-pspace`**（新增 3 个包），停留在 2026-11-19 的生成结果；
+> 需要看 pSpace 的 API 文档时请用 `mvn -o javadoc:javadoc` 重新生成。
 
 生成脚本放在 `scripts/` 下，该目录被 `.gitignore` 排除，**不在公开仓库内**；
 克隆本仓库后 `docs/apidocs` 是已生成好的静态文件，可直接打开。需要重新生成时用
@@ -1232,7 +1301,9 @@ mvn -o -pl tsdb-sdk-iotdb -am test \
 | **GE ↔ IoTDB 业务级对数** | **未执行**——迁移硬门槛，未完成前不得宣称可替换 |
 | 重试重放 / 熔断 / 信号量隔离 / 降级缓存 | **未实现**（`retry.*` 是配置项，不要据此宣称有完整弹性能力） |
 | Actuator `/actuator/health/tsdb` | **未实现**（starter 只注册 `TsdbManager` bean） |
-| 力控 pSpace 驱动 | **未实现**，无空壳驱动 |
+| pSpace 聚合数值与 pSpace 趋势客户端一致性 | **未执行**——已用同窗口原始点核对 AVG/`endval`/`delta`，与趋势客户端显示值对照需现场数据 |
+| pSpace 写入落历史 / `/AddPoint` / `/DelPoint` | **未执行**——环境已有 35 个点位，按约定不造数 |
+| pSpace WebSocket 订阅 IT | **未执行**（仅原生 `subscribe(...)`，未做推送用例） |
 | `FillPolicy.ZERO` | **未实现** |
 | 中央仓库**发布动作**（`mvn -Prelease deploy`） | **未执行**（pom 的 `url`/`scm`/`developers`/`distributionManagement` 与 `release` profile 已就绪，缺的是 Central token 与 GPG 密钥） |
 | Spring Boot 3.x 自动装配（`AutoConfiguration.imports`） | **未提供**，需自行 `@Import` |
@@ -1259,6 +1330,7 @@ mvn -o -pl tsdb-sdk-iotdb -am test \
 | [docs/14 · GE 迁移 IoTDB 对照与替换方案](docs/14-GE迁移IoTDB对照与替换方案.md) | 26 条实测服务端事实、七族双跑对数数字、替换门槛 |
 | [docs/13 · 业务替换方案](docs/13-业务替换方案.md) | 业务侧替换口径 |
 | [docs/11 · IoTDB 三通道与等间隔差分](docs/11-IoTDB三通道与等间隔差分.md) | 三通道一致性与等间隔/差分语义 |
+| [docs/16 · pSpace 接入与验证](docs/16-pSpace接入与验证.md) | 端点映射、字符集、类型/质量/时间规则、自动刷新、IT 门禁与未执行项 |
 | [docs/09 · GE 生产环境集成测试](docs/09-GE生产环境集成测试.md) / [docs/10 · HLS 生产环境集成测试](docs/10-HLS生产环境集成测试.md) | 现场只读验证记录 |
 
 **设计与规划**
@@ -1274,8 +1346,8 @@ mvn -o -pl tsdb-sdk-iotdb -am test \
 **模块 README**
 
 [common](tsdb-sdk-common/README.md) · [hls](tsdb-sdk-hls/README.md) · [ge](tsdb-sdk-ge/README.md) ·
-[iotdb](tsdb-sdk-iotdb/README.md) · [bom](tsdb-sdk-bom/README.md) ·
-[spring-boot-starter](tsdb-sdk-spring-boot-starter/README.md)
+[iotdb](tsdb-sdk-iotdb/README.md) · [pspace](tsdb-sdk-pspace/README.md) ·
+[bom](tsdb-sdk-bom/README.md) · [spring-boot-starter](tsdb-sdk-spring-boot-starter/README.md)
 
 **其它**
 

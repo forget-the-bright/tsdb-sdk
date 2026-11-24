@@ -1,8 +1,9 @@
 # 厂商 API 与公共 API 使用配置指南
 
-> 版本：2026-11-12  
-> 适用：`tsdb-sdk` 0.1.0  
-> 已实现：HLS、GE、IoTDB；力控 pSpace 待现场确认接口后实现。
+> 版本：2026-11-24  
+> 适用：`tsdb-sdk` 0.1.2  
+> 已实现：HLS、GE、IoTDB、力控 pSpace（Web API）；pSpace 的端点映射与验证记录见
+> [docs/16](16-pSpace接入与验证.md)，本文 §9 只保留配置入口。
 
 本文回答三个问题：
 
@@ -554,11 +555,18 @@ mvn -pl tsdb-sdk-iotdb -am test \
 
 ---
 
-## 9. 力控 pSpace（待实现）
+## 9. 力控 pSpace（已实现，Web API）
 
-公开资料确认 pSpace 提供 C/.NET/Java/Python/Web API、ODBC/JDBC/OLEDB，支持
-OPC DA/UA 发送；但 Java 包名、Maven 坐标、JDBC 驱动类/URL、REST 路径与鉴权
-细节尚未拿到。因此本 SDK **没有创建空壳驱动**。接入步骤与现场确认清单见
-[docs/07](07-新增驱动接入指南.md) 与 [docs/06](06-范围变更与力控接入.md)。
+`tsdb-sdk-pspace`，`type: pspace`，走 pSpace Web API（REST/JSON）。要点：
+
+- 读接口在 7.1 必须 **POST + JSON body**（手册写 GET，实测会 `Parse Json data failed`）；
+- 响应用 `{code,mesg,data}` 信封，`code=1` 表示范围内无数据；
+- `options.pspace.charset` 默认 `gbk`；配置 `auth` 会校验失败（账号在服务端 ini）；
+- 缓存未热时驱动自动 POST `/Refresh` 后重试一次（`auto-refresh` + `refresh-min-interval-ms`）；
+- `archived=1`（zlib）、非整秒聚合间隔、非 `NONE` 填充、`MONTH` 粒度差分均抛
+  `TsdbUnsupportedException`。
+
+完整端点映射、类型/质量/时间表、IT 门禁与未执行项见
+[docs/16](16-pSpace接入与验证.md)；配置模板见 [tsdb.example.yml](../tsdb.example.yml)。
 
 

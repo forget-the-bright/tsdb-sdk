@@ -12,6 +12,7 @@ import io.github.forget_the_bright.tsdb.common.exception.TsdbTimeoutException;
 
 import javax.net.ssl.SSLSocketFactory;
 import java.net.SocketTimeoutException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Map;
@@ -28,11 +29,13 @@ import java.util.Map;
  *   <li>{@code Accept: application/json}；</li>
  *   <li>不自动跟随重定向，3xx 作为普通响应返回；</li>
  *   <li>连接/读取超时从 {@code long} 毫秒安全收敛到 {@code int}；</li>
- *   <li>有请求体时按 UTF-8 编码；{@code contentType} 非空时精确写入，
- *       不会追加 charset（HLS 现场要求严格的 {@code application/json}）；</li>
+ *   <li>请求体与响应正文默认按 UTF-8 编码/解码；需要 GBK 等厂商编码时用
+ *       带 {@link Charset} 的重载显式指定；</li>
+ *   <li>{@code contentType} 非空时精确写入，不会追加 charset（HLS 与 pSpace
+ *       现场都要求严格的 {@code application/json}）；</li>
  *   <li>{@code verifyHostname=false} 时安装恒真主机名校验器；</li>
  *   <li>显式传入 trust-all 工厂时使用它，否则沿用 JVM 默认信任链；</li>
- *   <li>响应正文按 UTF-8 解码；非 2xx 的错误流由 Hutool 统一读取。</li>
+ *   <li>非 2xx 的错误流由 Hutool 统一读取。</li>
  * </ul>
  *
  * <p>实例不可变，可被多线程共享。底层是否为连接池由 Hutool 决定，本类不管理
@@ -87,6 +90,35 @@ public final class HttpTransport {
      */
     public HttpResult execute(String method, String url, Map<String, String> headers,
                               String body, String contentType) {
+        return execute(method, url, headers, body, contentType,
+                StandardCharsets.UTF_8, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 执行一次 HTTP 请求，并显式指定请求体与响应正文的字符集。
+     *
+     * <p>pSpace 等厂商服务端可能固定用 GBK 响应：请求体编码、响应解码必须与
+     * 服务端实际编码一致，否则中文位号会乱码。{@link StandardCharsets#UTF_8}
+     * 与默认重载行为完全相同。</p>
+     *
+     * @param method          HTTP 方法，大小写不敏感
+     * @param url             完整 URL
+     * @param headers         附加请求头，可为 {@code null}
+     * @param body            请求体文本，可为 {@code null}
+     * @param contentType     请求体类型；非 {@code null} 时精确写入
+     * @param requestCharset  请求体编码，不能为 {@code null}
+     * @param responseCharset 响应正文解码，不能为 {@code null}
+     * @return 响应状态码与按 {@code responseCharset} 解码的正文
+     * @throws IllegalArgumentException 任一字符集为 {@code null} 时
+     * @throws TsdbTimeoutException    连接或读取超时
+     * @throws TsdbConnectionException 网络失败或 URL/协议错误
+     */
+    public HttpResult execute(String method, String url, Map<String, String> headers,
+                              String body, String contentType,
+                              Charset requestCharset, Charset responseCharset) {
+        if (requestCharset == null || responseCharset == null) {
+            throw new IllegalArgumentException("charsets must not be null");
+        }
         try {
             HttpRequest request = HttpRequest.of(url)
                     .method(Method.valueOf(method.toUpperCase(Locale.ROOT)))
@@ -111,11 +143,11 @@ public final class HttpTransport {
                 request.header("Content-Type", contentType);
             }
             if (body != null) {
-                request.body(body.getBytes(StandardCharsets.UTF_8));
+                request.body(body.getBytes(requestCharset));
             }
             try (HttpResponse response = request.execute()) {
                 byte[] bytes = response.bodyBytes();
-                String text = bytes == null ? "" : new String(bytes, StandardCharsets.UTF_8);
+                String text = bytes == null ? "" : new String(bytes, responseCharset);
                 return new HttpResult(response.getStatus(), text);
             }
         } catch (TsdbException e) {

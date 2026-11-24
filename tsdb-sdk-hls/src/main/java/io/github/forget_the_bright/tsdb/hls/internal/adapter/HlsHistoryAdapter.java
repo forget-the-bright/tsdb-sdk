@@ -88,6 +88,7 @@ public final class HlsHistoryAdapter implements HistoryReader {
         }
         if (query.getMode() == QueryMode.AGGREGATED
                 && query.getAggregation() == Aggregation.INTERVAL_SUM) {
+            // 计算间隔桶差值，这个Fill 没有意义，填不填都一样，不过只是给个提示
             if (query.getFill() != FillPolicy.NONE) {
                 throw support.unsupported("HLS interval sum does not support fill policies",
                         "history", query.getFill().name());

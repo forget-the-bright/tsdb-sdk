@@ -40,6 +40,11 @@
             </dependency>
             <dependency>
                 <groupId>${project.groupId}</groupId>
+                <artifactId>tsdb-sdk-pspace</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>${project.groupId}</groupId>
                 <artifactId>tsdb-sdk-spring-boot-starter</artifactId>
                 <version>${project.version}</version>
             </dependency>
